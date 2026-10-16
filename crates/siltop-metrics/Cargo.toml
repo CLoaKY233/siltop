@@ -1,0 +1,15 @@
+[package]
+name = "siltop-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "System collectors for siltop"
+
+[dependencies]
+libc.workspace = true
+siltop-core.workspace = true
+
+[lints]
+workspace = true

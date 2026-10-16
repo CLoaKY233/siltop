@@ -1,0 +1,81 @@
+---
+source: crates/siltop-ui/src/widgets/golden.rs
+description: work_80x24 with a style key per cell; legend at the bottom
+---
+|╭ cpu  34% … ─[↗]╮╭ gpu  17% … [↗]╮ ╭ proc  46 ─────────────────────────────[↗]╮|
+|abbbbaacccabaabbbaabbbbaacccababbbadefffffeecceeeeeeeeeeeeeeeeeeeeeeeeeeeeeefffe|
+|│                ││               │ │ search  / to filter                      │|
+|addddddddddddddddaadddddddddddddddadebbbbbbbbbbbbbbbbbbbbdddddddddddddddddddddde|
+|│                ││               │ │ name                      cpu%↓       mem│|
+|addddddddddddddddaadddddddddddddddadedbbbbdddddddddddddddddddddddddddddbbbbbbbbe|
+|│           ⣀⣀   ││⣄⡄    ⣤    ⣶⡄  │ │▌rustc                      98.6      1.2G│|
+|adddddddddddggdddaahhddddhddddhhddadeijjjjjjjjjjjjjjjjjjjjjjjjiiiiiiijjjjjjjjjje|
+|│⣀      ⢀⣠⣶⣾⣿⣿⣿⣶⣄││⣿⣧⡄  ⣶⣿⣶⡀ ⡀⣿⣇⣀ │ │ rustc                      87.3      942M│|
+|akddddddkkkkkkkkkaalllddlllldlllldadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│⣿⣷⣶⣤⣤⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣷⣤⣷⣿⣿⣿⣷⣰⣿⣿⣿⣿⣄│ │ rustc                      41.5      610M│|
+|ammmmmmmmmmmmmmmmaannnnnnnnnnnnnnnadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ ollama-runner              31.9      9.6G│|
+|aooooooooooooooooaapppppppppppppppadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╰─−2m────────now─╯╰───────────────╯ │ rust-analyzer              22.7      2.5G│|
+|aabbbaaaaaaaabbbaaaaaaaaaaaaaaaaaaadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╭ mem  15.2G ─[↗]╮╭ heat  64° ─[↗]╮ │ WindowServer               14.2      412M│|
+|abbbbaacccccaabbbaabbbbbaaqqqaabbbadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│██████████▒▒▒▒──││          ⢀⡀   │ │ Brave Browser Helper …     12.1      402M│|
+|arrrrrrrsstbbbbuuaaddddddddddvvdddadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀││⣄⣀   ⢀⣠⣴⣶⣿⣿⣿⣿⣷⣦│ │ Brave Browser Helper …      9.8      301M│|
+|assssssssssssssssaawwdddwwwwwwwwwwadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ SourceKitService            7.9      880M│|
+|attttttttttttttttaaxxxxxxxxxxxxxxxadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╰─−2m────────now─╯╰───────────────╯ │ Brave Browser               6.4      488M│|
+|aabbbaaaaaaaabbbaaaaaaaaaaaaaaaaaaadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╭ net ────────[↗]╮╭ disk ──────[↗]╮ │ zed                         5.2      739M│|
+|abbbbaaaaaaaaabbbaabbbbbaaaaaaabbbadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│                ││               │ │ cargo                       4.4       72M│|
+|addddddddddddddddaadddddddddddddddadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│⣤⣤⣤⣀⡀  ⢀⣠⣄⣤⣤⣄⣀⣀ ││⣤⢀ ⣀⣤⡄ ⢀⣠⣄⡀ ⣤⣀⣀│ │ mds_stores                  3.7       96M│|
+|ayyyyyddyyyyyyyydaazzdzzzdzzzzdzzzadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│                ││               │ │ Xcode                       3.3      1.4G│|
+|addddddddddddddddaadddddddddddddddadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╰─−2m────────now─╯╰───────────────╯ │ Simulator                   2.8      402M│|
+|aabbbaaaaaaaabbbaaaaaaaaaaaaaaaaaaadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╭ power  82% ▼ ──────── 80–95% [↗]╮ │ Brave Browser Helper …      2.6      188M│|
+|abbbbbbaadddddaaaaaaaaabbbbbbbbbbbadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│                                 │ │ photoanalysisd              2.1      210M│|
+|adddddddddddddddddddddddddddddddddadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣦⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤│ │ Terminal                    1.9      118M│|
+|aAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ backupd  Time Machine       1.6       51M│|
+|aBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBadeddddddddbbbbbbbbbbbbbbdddeeeeeeedddddddddde|
+|╰─−2m────┴───────┴───────┴────now─╯ ╰──────────────────────────────────────────╯|
+|aabbbaaaabaaaaaaabaaaaaaabaaaabbbaadeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|
+| siltop ≡  ? help  f filter  x kill  s settings  q quit            82% ▼  ● 1 s |
+|dbbbbbbbbddcbbbbbddcbbbbbbbddcbbbbbddcbbbbbbbbbddcbbbbbdddddddddddddddddddbbbbbd|
+
+a  fg Rgb(64, 69, 77)  bg Reset  NONE
+b  fg Rgb(149, 156, 165)  bg Reset  NONE
+c  fg Reset  bg Reset  BOLD
+d  fg Reset  bg Reset  NONE
+e  fg Rgb(95, 212, 151)  bg Reset  NONE
+f  fg Rgb(95, 212, 151)  bg Reset  BOLD
+g  fg Rgb(71, 176, 122)  bg Reset  NONE
+h  fg Rgb(146, 121, 221)  bg Reset  NONE
+i  fg Rgb(95, 212, 151)  bg Rgb(36, 48, 57)  BOLD
+j  fg Reset  bg Rgb(36, 48, 57)  BOLD
+k  fg Rgb(59, 157, 108)  bg Reset  NONE
+l  fg Rgb(131, 112, 210)  bg Reset  NONE
+m  fg Rgb(47, 139, 93)  bg Reset  NONE
+n  fg Rgb(117, 102, 198)  bg Reset  NONE
+o  fg Rgb(35, 121, 79)  bg Reset  NONE
+p  fg Rgb(103, 93, 186)  bg Reset  NONE
+q  fg Rgb(151, 201, 213)  bg Reset  NONE
+r  fg Rgb(200, 238, 255)  bg Reset  NONE
+s  fg Rgb(92, 191, 232)  bg Reset  NONE
+t  fg Rgb(51, 112, 142)  bg Reset  NONE
+u  fg Rgb(58, 63, 70)  bg Reset  NONE
+v  fg Rgb(127, 178, 255)  bg Reset  NONE
+w  fg Rgb(100, 143, 207)  bg Reset  NONE
+x  fg Rgb(72, 108, 159)  bg Reset  NONE
+y  fg Rgb(76, 106, 173)  bg Reset  NONE
+z  fg Rgb(109, 100, 153)  bg Reset  NONE
+A  fg Rgb(131, 143, 160)  bg Reset  NONE
+B  fg Rgb(98, 109, 125)  bg Reset  NONE

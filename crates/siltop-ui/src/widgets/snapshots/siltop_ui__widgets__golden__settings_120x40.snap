@@ -1,0 +1,44 @@
+---
+source: crates/siltop-ui/src/widgets/golden.rs
+description: "settings_120x40: 120x40"
+---
+| siltop › settings                                                                                            esc close |
+|                                                                                                                        |
+| ▌ general   │ ▌ sample every    ‹ 500 ms ›                                                                             |
+|   appearance│   layout            auto                                                                                 |
+|   panels    │   network units     bytes/s                                                                              |
+|   processes │   battery saver     auto                                                                                 |
+|   alerts    │   preset            custom                                                                               |
+|   keys      │                                                                                                          |
+|   privacy   │                                                                                                          |
+|   about     │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|             │                                                                                                          |
+|                                                                                                                        |
+|               How often siltop samples. Faster is smoother; slower uses less power.                                    |
+|                                                                                                                        |
+|                                                                                                                        |
+| ↑↓ move  ←→ change  tab section  / search  esc close                                                                   |

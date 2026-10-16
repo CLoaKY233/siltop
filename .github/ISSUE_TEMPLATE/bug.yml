@@ -1,0 +1,50 @@
+name: Bug report
+description: Something is wrong, missing, or shows a number you don't trust.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead. A screenshot helps a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      placeholder: "1. Run siltop in a 120x40 window\n2. Press ...\n3. ..."
+  - type: textarea
+    id: doctor
+    attributes:
+      label: siltop doctor
+      description: Paste the output of `siltop doctor` (chip, macOS version, sensors, self-cost). It contains no personal data.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and size
+      placeholder: Ghostty 1.2, 160x45, inside tmux
+  - type: input
+    id: version
+    attributes:
+      label: siltop version
+      description: "`siltop --version` (filled in when you use `siltop feedback`)"
+      placeholder: "1.2.0"
+  - type: input
+    id: chip
+    attributes:
+      label: Chip
+      placeholder: Apple M4 Pro
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "26.1"
+  - type: input
+    id: install
+    attributes:
+      label: How you installed it
+      placeholder: brew, download, cargo

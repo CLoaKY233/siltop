@@ -1,0 +1,26 @@
+[package]
+name = "siltop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Apple Silicon system monitor TUI"
+
+[[bin]]
+name = "siltop"
+path = "src/main.rs"
+
+[dependencies]
+libc.workspace = true
+siltop-core.workspace = true
+siltop-metrics.workspace = true
+siltop-ui.workspace = true
+ratatui.workspace = true
+signal-hook.workspace = true
+toml_edit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

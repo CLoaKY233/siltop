@@ -1,0 +1,64 @@
+---
+source: crates/siltop-ui/src/widgets/golden.rs
+description: work_80x24 lowered to 16 colours; legend at the bottom
+---
+|╭ cpu  34% … ─[↗]╮╭ gpu  17% … [↗]╮ ╭ proc  46 ─────────────────────────────[↗]╮|
+|aaaaaaabbbaaaaaaaaaaaaaaabbbaaaaaaacdeeeeeddbbddddddddddddddddddddddddddddddeeed|
+|│                ││               │ │ search  / to filter                      │|
+|accccccccccccccccaacccccccccccccccacdaaaaaaaaaaaaaaaaaaaaccccccccccccccccccccccd|
+|│                ││               │ │ name                      cpu%↓       mem│|
+|accccccccccccccccaacccccccccccccccacdcaaaacccccccccccccccccccccccccccccaaaaaaaad|
+|│           ⣀⣀   ││⣄⡄    ⣤    ⣶⡄  │ │▌rustc                      98.6      1.2G│|
+|acccccccccccddcccaaffccccfccccffccacdggggggggggggggggggggggggggggggggggggggggggd|
+|│⣀      ⢀⣠⣶⣾⣿⣿⣿⣶⣄││⣿⣧⡄  ⣶⣿⣶⡀ ⡀⣿⣇⣀ │ │ rustc                      87.3      942M│|
+|adccccccdddddddddaafffccffffcffffcacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│⣿⣷⣶⣤⣤⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣷⣤⣷⣿⣿⣿⣷⣰⣿⣿⣿⣿⣄│ │ rustc                      41.5      610M│|
+|addddddddddddddddaafffffffffffffffacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ ollama-runner              31.9      9.6G│|
+|addddddddddddddddaafffffffffffffffacdcccccccccccccccccccccccccdddddddccccccccccd|
+|╰─−2m────────now─╯╰───────────────╯ │ rust-analyzer              22.7      2.5G│|
+|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
+|╭ mem  15.2G ─[↗]╮╭ heat  64° ─[↗]╮ │ WindowServer               14.2      412M│|
+|aaaaaaabbbbbaaaaaaaaaaaaaahhhaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│██████████▒▒▒▒──││          ⢀⡀   │ │ Brave Browser Helper …     12.1      402M│|
+|ahhhhhhhhhhaaaaaaaacccccccccciicccacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀││⣄⣀   ⢀⣠⣴⣶⣿⣿⣿⣿⣷⣦│ │ Brave Browser Helper …      9.8      301M│|
+|ahhhhhhhhhhhhhhhhaaiiccciiiiiiiiiiacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ SourceKitService            7.9      880M│|
+|ahhhhhhhhhhhhhhhhaaiiiiiiiiiiiiiiiacdcccccccccccccccccccccccccdddddddccccccccccd|
+|╰─−2m────────now─╯╰───────────────╯ │ Brave Browser               6.4      488M│|
+|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
+|╭ net ────────[↗]╮╭ disk ──────[↗]╮ │ zed                         5.2      739M│|
+|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│                ││               │ │ cargo                       4.4       72M│|
+|accccccccccccccccaacccccccccccccccacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│⣤⣤⣤⣀⡀  ⢀⣠⣄⣤⣤⣄⣀⣀ ││⣤⢀ ⣀⣤⡄ ⢀⣠⣄⡀ ⣤⣀⣀│ │ mds_stores                  3.7       96M│|
+|aiiiiicciiiiiiiicaajjcjjjcjjjjcjjjacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│                ││               │ │ Xcode                       3.3      1.4G│|
+|accccccccccccccccaacccccccccccccccacdcccccccccccccccccccccccccdddddddccccccccccd|
+|╰─−2m────────now─╯╰───────────────╯ │ Simulator                   2.8      402M│|
+|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
+|╭ power  82% ▼ ──────── 80–95% [↗]╮ │ Brave Browser Helper …      2.6      188M│|
+|aaaaaaaaacccccaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│                                 │ │ photoanalysisd              2.1      210M│|
+|acccccccccccccccccccccccccccccccccacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣦⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤│ │ Terminal                    1.9      118M│|
+|akkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkacdcccccccccccccccccccccccccdddddddccccccccccd|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ backupd  Time Machine       1.6       51M│|
+|akkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkacdccccccccaaaaaaaaaaaaaacccdddddddccccccccccd|
+|╰─−2m────┴───────┴───────┴────now─╯ ╰──────────────────────────────────────────╯|
+|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdddddddddddddddddddddddddddddddddddddddddddd|
+| siltop ≡  ? help  f filter  x kill  s settings  q quit            82% ▼  ● 1 s |
+|caaaaaaaaccbaaaaaccbaaaaaaaccbaaaaaccbaaaaaaaaaccbaaaaacccccccccccccccccccaaaaac|
+
+a  fg DarkGray  bg Reset  NONE
+b  fg Reset  bg Reset  BOLD
+c  fg Reset  bg Reset  NONE
+d  fg Green  bg Reset  NONE
+e  fg Green  bg Reset  BOLD
+f  fg Magenta  bg Reset  NONE
+g  fg Reset  bg Reset  BOLD | REVERSED
+h  fg Cyan  bg Reset  NONE
+i  fg LightBlue  bg Reset  NONE
+j  fg LightMagenta  bg Reset  NONE
+k  fg Gray  bg Reset  NONE

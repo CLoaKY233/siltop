@@ -1,0 +1,28 @@
+---
+source: crates/siltop-ui/src/widgets/golden.rs
+description: "work_80x24_warming: 80x24"
+---
+|╭ cpu  …  58° [↗]╮╭ gpu  … … ──[↗]╮ ╭ proc  46 ─────────────────────────────[↗]╮|
+|│                ││               │ │ search  / to filter                      │|
+|│                ││               │ │ name                      cpu%↓       mem│|
+|│           ⣀⣀   ││⣄⡄    ⣤    ⣶⡄  │ │▌rustc                      98.6      1.2G│|
+|│⣀      ⢀⣠⣶⣾⣿⣿⣿⣶⣄││⣿⣧⡄  ⣶⣿⣶⡀ ⡀⣿⣇⣀ │ │ rustc                      87.3      942M│|
+|│⣿⣷⣶⣤⣤⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣷⣤⣷⣿⣿⣿⣷⣰⣿⣿⣿⣿⣄│ │ rustc                      41.5      610M│|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ ollama-runner              31.9      9.6G│|
+|╰─−2m────────now─╯╰───────────────╯ │ rust-analyzer              22.7      2.5G│|
+|╭ mem  15.2G ─[↗]╮╭ heat  64° ─[↗]╮ │ WindowServer               14.2      412M│|
+|│██████████▒▒▒▒──││          ⢀⡀   │ │ Brave Browser Helper …     12.1      402M│|
+|│⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀││⣄⣀   ⢀⣠⣴⣶⣿⣿⣿⣿⣷⣦│ │ Brave Browser Helper …      9.8      301M│|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ SourceKitService            7.9      880M│|
+|╰─−2m────────now─╯╰───────────────╯ │ Brave Browser               6.4      488M│|
+|╭ net ────────[↗]╮╭ disk ──────[↗]╮ │ zed                         5.2      739M│|
+|│                ││               │ │ cargo                       4.4       72M│|
+|│⣤⣤⣤⣀⡀  ⢀⣠⣄⣤⣤⣄⣀⣀ ││⣤⢀ ⣀⣤⡄ ⢀⣠⣄⡀ ⣤⣀⣀│ │ mds_stores                  3.7       96M│|
+|│                ││               │ │ Xcode                       3.3      1.4G│|
+|╰─−2m────────now─╯╰───────────────╯ │ Simulator                   2.8      402M│|
+|╭ power  82% ▼ ──────── 80–95% [↗]╮ │ Brave Browser Helper …      2.6      188M│|
+|│                                 │ │ photoanalysisd              2.1      210M│|
+|│⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣦⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤│ │ Terminal                    1.9      118M│|
+|│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ backupd  Time Machine       1.6       51M│|
+|╰─−2m────┴───────┴───────┴────now─╯ ╰──────────────────────────────────────────╯|
+| siltop ≡  ? help  f filter  x kill  s settings  q quit            82% ▼  ● 1 s |

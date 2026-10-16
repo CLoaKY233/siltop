@@ -1,0 +1,36 @@
+name: Feature request
+description: Something siltop should show or do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The question you are trying to answer
+      description: For example "which app is draining my battery on the train?"
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like to see
+  - type: input
+    id: version
+    attributes:
+      label: siltop version
+      description: "`siltop --version` (filled in when you use `siltop feedback`)"
+      placeholder: "1.2.0"
+  - type: input
+    id: chip
+    attributes:
+      label: Chip
+      placeholder: Apple M4 Pro
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "26.1"
+  - type: input
+    id: install
+    attributes:
+      label: How you installed it
+      placeholder: brew, download, cargo

@@ -1,0 +1,28 @@
+---
+source: crates/siltop-ui/src/widgets/golden.rs
+description: "expanded_proc_80x24: 80x24"
+---
+|╭ proc  46 ─────────────────────────────────────────────────────────────────[×]╮|
+|│ search  / to filter                                                          │|
+|│     pid  name                          user         cpu%↓       mem   started│|
+|│▌  51234  rustc                         dev           98.6      1.2G        0s│|
+|│   51240  rustc                         dev           87.3      942M         —│|
+|│   51266  rustc                         dev           41.5      610M         —│|
+|│    6020  ollama-runner                 dev           31.9      9.6G         —│|
+|│    4040  rust-analyzer                 dev           22.7      2.5G         —│|
+|│     412  WindowServer  Window server   _windows…     14.2      412M         —│|
+|│    2240  Brave Browser Helper (Rende…  dev           12.1      402M         —│|
+|│    2231  Brave Browser Helper (GPU)    dev            9.8      301M         —│|
+|│    8301  SourceKitService              dev            7.9      880M         —│|
+|│    2210  Brave Browser                 dev            6.4      488M         —│|
+|│    4012  zed                           dev            5.2      739M         —│|
+|│    3188  cargo                         dev            4.4       72M         —│|
+|│     301  mds_stores                    root           3.7       96M         —│|
+|│    8250  Xcode                         dev            3.3      1.4G         —│|
+|│    8420  Simulator                     dev            2.8      402M         —│|
+|│    2244  Brave Browser Helper (Rende…  dev            2.6      188M         —│|
+|│    5003  photoanalysisd                dev            2.1      210M         —│|
+|│    3102  Terminal                      dev            1.9      118M         —│|
+|│    7422  backupd  Time Machine         root           1.6       51M         —│|
+|╰──────────────────────────────────────────────────────────────────────────────╯|
+| siltop ≡  ? help  tab related  esc home  q quit                   82% ▼  ● 1 s |

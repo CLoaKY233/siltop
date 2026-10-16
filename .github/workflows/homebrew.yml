@@ -1,0 +1,206 @@
+# Homebrew: bottle the public release and publish the tap formula.
+#
+# Called by release.yml after a final release is published, or run by hand:
+#   gh workflow run homebrew.yml -f tag=v1.1.1               # dry run: build + check, publish nothing
+#   gh workflow run homebrew.yml -f tag=v1.1.1 -f publish=true
+#
+# Why a bottle: an unbottled formula is a source build to Homebrew, and Homebrew refuses
+# a source build when the Command Line Tools are older than the OS, even though this
+# formula only copies a prebuilt binary. The bottle is tagged `all` (one arm64 binary
+# runs on every supported macOS), named siltop-<version>.all.bottle.tar.gz, and
+# attached to the release beside the tarball.
+name: Homebrew
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      publish:
+        type: boolean
+        default: false
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to bottle, e.g. v1.1.1"
+        required: true
+      publish:
+        description: "Upload the bottle and push the tap (off = dry run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  bottle:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ inputs.tag }}
+      PUBLISH: ${{ inputs.publish }}
+      RELEASE_REPO: ${{ github.repository }}
+      HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'CLoaKY233/homebrew-tap' }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_FROM_API: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: fetch and verify the release tarball
+        id: src
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "not a vX.Y.Z tag: $TAG" >&2; exit 1 ;; esac
+          version="${TAG#v}"
+          tarball="siltop-${TAG}-macos-arm64.tar.gz"
+          work="${RUNNER_TEMP}/bottle"
+          mkdir -p "$work"
+          gh release download "$TAG" --repo "$RELEASE_REPO" \
+            --pattern "$tarball" --pattern "${tarball}.sha256" --dir "$work"
+          (cd "$work" && shasum -a 256 -c "${tarball}.sha256")
+          sha=$(cut -d ' ' -f 1 "${work}/${tarball}.sha256")
+          {
+            echo "version=${version}"
+            echo "sha=${sha}"
+            echo "work=${work}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: render the formula into a throwaway tap
+        id: tap
+        env:
+          SHA: ${{ steps.src.outputs.sha }}
+        run: |
+          set -euo pipefail
+          formula="${RUNNER_TEMP}/siltop.rb"
+          scripts/package.sh formula "$TAG" "$SHA" "$RELEASE_REPO" > "$formula"
+          ruby -c "$formula"
+          # A local tap named apart from the real one, so nothing here can shadow it.
+          brew tap-new --no-git cloaky233/bottling
+          cp "$formula" "$(brew --repository)/Library/Taps/cloaky233/homebrew-bottling/Formula/siltop.rb"
+          echo "formula=${formula}" >> "$GITHUB_OUTPUT"
+
+      - name: build and test the bottle
+        id: bottle
+        env:
+          VERSION: ${{ steps.src.outputs.version }}
+          WORK: ${{ steps.src.outputs.work }}
+        run: |
+          set -euo pipefail
+          cd "$WORK"
+          brew install --build-bottle cloaky233/bottling/siltop
+          brew test cloaky233/bottling/siltop
+          "$(brew --prefix)/bin/siltop" --version | grep -q "^siltop ${VERSION} "
+          brew bottle --no-rebuild \
+            --root-url="https://github.com/${RELEASE_REPO}/releases/download/${TAG}" \
+            cloaky233/bottling/siltop
+          shopt -s nullglob
+          built=(siltop--"${VERSION}".*.bottle.tar.gz)
+          [ ${#built[@]} -eq 1 ] || { echo "expected one bottle, found: ${built[*]:-none}" >&2; exit 1; }
+          name="siltop-${VERSION}.all.bottle.tar.gz"
+          mv "${built[0]}" "$name"
+          sha=$(shasum -a 256 "$name" | cut -d ' ' -f 1)
+          # The bottle must pour. Point the throwaway formula's bottle at this file and
+          # install it the way a user would; brew has to say it poured the `all` bottle.
+          tapf="$(brew --repository)/Library/Taps/cloaky233/homebrew-bottling/Formula/siltop.rb"
+          awk -v root="file://${WORK}" -v sha="$sha" '
+            !done && /^  depends_on arch:/ {
+              print "  bottle do"
+              print "    root_url \"" root "\""
+              print "    sha256 cellar: :any_skip_relocation, all: \"" sha "\""
+              print "  end"
+              print ""
+              done = 1
+            }
+            { print }
+          ' "$tapf" > "${tapf}.new" && mv "${tapf}.new" "$tapf"
+          brew uninstall --force siltop
+          brew install cloaky233/bottling/siltop 2>&1 | tee "${RUNNER_TEMP}/pour.log"
+          grep -q "Pouring ${name}" "${RUNNER_TEMP}/pour.log"
+          brew test cloaky233/bottling/siltop
+          {
+            echo "name=${name}"
+            echo "sha=${sha}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: add the bottle block
+        env:
+          FORMULA: ${{ steps.tap.outputs.formula }}
+          SHA: ${{ steps.bottle.outputs.sha }}
+        run: |
+          set -euo pipefail
+          root="https://github.com/${RELEASE_REPO}/releases/download/${TAG}"
+          awk -v root="$root" -v sha="$SHA" '
+            !done && /^  depends_on arch:/ {
+              print "  bottle do"
+              print "    root_url \"" root "\""
+              print "    sha256 cellar: :any_skip_relocation, all: \"" sha "\""
+              print "  end"
+              print ""
+              done = 1
+            }
+            { print }
+            END { if (!done) exit 1 }
+          ' "$FORMULA" > "${FORMULA}.new"
+          mv "${FORMULA}.new" "$FORMULA"
+          ruby -c "$FORMULA"
+          cat "$FORMULA"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-${{ inputs.tag }}
+          path: |
+            ${{ steps.src.outputs.work }}/${{ steps.bottle.outputs.name }}
+            ${{ steps.tap.outputs.formula }}
+
+      - name: upload the bottle to the release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORK: ${{ steps.src.outputs.work }}
+          NAME: ${{ steps.bottle.outputs.name }}
+        run: gh release upload "$TAG" "${WORK}/${NAME}" --repo "$RELEASE_REPO" --clobber
+
+      - name: push the formula to the tap
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          FORMULA: ${{ steps.tap.outputs.formula }}
+          VERSION: ${{ steps.src.outputs.version }}
+        run: |
+          set -euo pipefail
+          tap="${RUNNER_TEMP}/tap"
+          gh repo clone "$HOMEBREW_TAP_REPO" "$tap" -- --depth 1
+          mkdir -p "${tap}/Formula"
+          cp "$FORMULA" "${tap}/Formula/siltop.rb"
+          cd "$tap"
+          if git diff --quiet -- Formula/siltop.rb && git ls-files --error-unmatch Formula/siltop.rb >/dev/null 2>&1; then
+            echo "tap already at ${VERSION}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/siltop.rb
+          git commit -m "siltop ${VERSION}."
+          gh auth setup-git
+          git push origin HEAD
+
+      - name: a clean install from the published tap pours the bottle
+        if: env.PUBLISH == 'true'
+        env:
+          VERSION: ${{ steps.src.outputs.version }}
+        run: |
+          set -euo pipefail
+          brew uninstall --force siltop
+          brew untap cloaky233/bottling
+          brew tap cloaky233/tap
+          brew install cloaky233/tap/siltop 2>&1 | tee "${RUNNER_TEMP}/install.log"
+          grep -q "Pouring siltop-${VERSION}.all.bottle.tar.gz" "${RUNNER_TEMP}/install.log"
+          brew test cloaky233/tap/siltop

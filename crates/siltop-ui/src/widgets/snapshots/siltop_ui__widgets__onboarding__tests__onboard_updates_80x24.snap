@@ -1,0 +1,27 @@
+---
+source: crates/siltop-ui/src/widgets/onboarding.rs
+---
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|    ╭ siltop · Updates ────────────────────────────────────────────────────╮    |
+|    │Check for updates when siltop starts? It asks GitHub once a day for   │    |
+|    │the latest release number. Nothing about you or your Mac is sent.     │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │ [ Yes, check ]  [ No ]                                               │    |
+|    │ Enter chooses  ·  Esc skips                                          │    |
+|    ╰──────────────────────────────────────────────────────────────────────╯    |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |

@@ -1,0 +1,27 @@
+---
+source: crates/siltop-ui/src/widgets/onboarding.rs
+---
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|    ╭ siltop · Welcome ────────────────────────────────────────────────────╮    |
+|    │A system monitor for Apple Silicon, in the terminal.                  │    |
+|    │                                                                      │    |
+|    │m menu · ? keys · T themes                                            │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │                                                                      │    |
+|    │ [ Continue ]                                                         │    |
+|    │ Enter chooses  ·  Esc skips                                          │    |
+|    ╰──────────────────────────────────────────────────────────────────────╯    |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
