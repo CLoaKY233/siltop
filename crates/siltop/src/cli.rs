@@ -521,7 +521,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "update",
         subs: &[],
         value: None,
-        args: "--check | --yes | --rollback",
+        args: "[--check | --yes | --rollback]",
         help: "Check and say how to install; --yes installs",
     },
     CommandSpec {
@@ -2257,8 +2257,8 @@ mod tests {
         let docs = repo_file("README.md") + &repo_file("docs/guide.md");
         for flag in usage()
             .split_whitespace()
+            .map(|w| w.trim_matches(|c| matches!(c, '[' | ']' | ',')))
             .filter(|w| w.starts_with("--"))
-            .map(|w| w.trim_end_matches(','))
         {
             assert!(docs.contains(flag), "README and guide are missing {flag}");
         }
@@ -2392,7 +2392,14 @@ mod tests {
         let readme = repo_file("README.md");
         assert!(formula.contains("/releases/download/@TAG@/siltop-@TAG@-macos-arm64.tar.gz"));
         assert!(script.contains("name=\"siltop-${tag}-macos-arm64\""));
-        assert!(readme.contains("siltop-<tag>-macos-arm64.zip"));
+        // The README's copy-paste install lines name this exact release.
+        for pinned in [
+            format!("--tag v{VERSION} siltop"),
+            format!("/download/v{VERSION}/siltop-v{VERSION}-macos-arm64.tar.gz"),
+            format!("siltop-v{VERSION}-macos-arm64/siltop"),
+        ] {
+            assert!(readme.contains(&pinned), "README is missing {pinned}");
+        }
     }
 
     /// CI packages through the same script a local dry run uses.

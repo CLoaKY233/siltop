@@ -15,9 +15,10 @@ name: Release
 #                         Notarization also needs an App Store Connect API key:
 #                         APPLE_NOTARY_KEY (base64 .p8), APPLE_NOTARY_KEY_ID,
 #                         APPLE_NOTARY_ISSUER.
-#   Homebrew tap bump     HOMEBREW_TAP_TOKEN (fine-grained PAT, contents: write
-#                         on the tap; vars.HOMEBREW_TAP_REPO overrides
-#                         CLoaKY233/homebrew-tap). Final releases only.
+#   Homebrew tap bump     HOMEBREW_TAP_DEPLOY_KEY (private half of an SSH
+#                         deploy key with write access to the tap only;
+#                         vars.HOMEBREW_TAP_REPO overrides CLoaKY233/homebrew-tap).
+#                         Final releases only.
 
 on:
   push:
@@ -54,9 +55,8 @@ jobs:
         with:
           tool: cargo-about
       - name: build
-        run: cargo build --release --locked -p siltop
-        env:
-          SILTOP_GIT_SHA: ${{ github.sha }}
+        # The same 10-character commit a local build reports.
+        run: SILTOP_GIT_SHA="${GITHUB_SHA::10}" cargo build --release --locked -p siltop
 
       - name: signing keychain (optional)
         if: env.HAVE_CODESIGN == 'true'
@@ -117,7 +117,7 @@ jobs:
       # homebrew runs only for a final release, and only when the tap token exists
       homebrew: ${{ steps.kind.outputs.prerelease == 'false' && env.HAVE_TAP == 'true' }}
     env:
-      HAVE_TAP: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+      HAVE_TAP: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8

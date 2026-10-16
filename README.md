@@ -70,13 +70,19 @@ Requires macOS on Apple Silicon.
 brew install cloaky233/tap/siltop
 ```
 
-**Cargo** (builds from source; the toolchain is pinned in `rust-toolchain.toml`)
+**Prebuilt binary** (curl downloads are not quarantined, so it runs straight away)
 
 ```sh
-cargo install --git https://github.com/CLoaKY233/siltop siltop --locked
+mkdir -p ~/.local/bin && curl -fsSL https://github.com/CLoaKY233/siltop/releases/download/v1.2.1/siltop-v1.2.1-macos-arm64.tar.gz | tar -xz --strip-components 1 -C ~/.local/bin siltop-v1.2.1-macos-arm64/siltop
 ```
 
-**Prebuilt binary**: every [release](https://github.com/CLoaKY233/siltop/releases) has `siltop-<tag>-macos-arm64.zip` and `siltop-<tag>-macos-arm64.tar.gz` with SHA-256 files. Unpack and put `siltop` on your `PATH`. If macOS says it can't check the file, run `xattr -d com.apple.quarantine siltop` once.
+Make sure `~/.local/bin` is on your `PATH`. `siltop update --yes` keeps this copy current. Every [release](https://github.com/CLoaKY233/siltop/releases) also has a `.zip` and SHA-256 files. A copy downloaded with a browser is quarantined by macOS and blocked on first run, because it is not notarized. Clear that before running it: `xattr -d com.apple.quarantine siltop`.
+
+**From source** (Rust 1.98 or newer)
+
+```sh
+cargo install --git https://github.com/CLoaKY233/siltop --tag v1.2.1 siltop --locked
+```
 
 Then run `siltop`. Try `siltop --demo` first if you just want to look around.
 
@@ -113,6 +119,7 @@ Everything is optional. Settings live in `~/.config/siltop/config.toml` (or unde
 | `SILTOP_KEYS=htop\|btop` | htop or btop key layout |
 | `SILTOP_COLORS=truecolor\|256\|16\|none` | Override the colour-depth guess |
 | `SILTOP_ICONS=nerd` | Nerd Font icons in panel titles |
+| `SILTOP_NO_UPDATE_CHECK=1` | Never run the opt-in daily update check |
 | `NO_COLOR=1` | Attributes only (bold, dim, reverse) |
 
 ## Privacy

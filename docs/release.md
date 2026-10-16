@@ -22,7 +22,7 @@ tag vX.Y.Z
        gate      the full CI gate (ci.yml)
        build     cargo build → scripts/package.sh → codesign? → notarize?
        publish   GitHub release in this repository, notes from CHANGELOG.md
-       homebrew  homebrew.yml, final releases only (HOMEBREW_TAP_TOKEN):
+       homebrew  homebrew.yml, final releases only (HOMEBREW_TAP_DEPLOY_KEY):
                  bottle the release tarball on macOS, check it pours and passes
                  `brew test`, attach siltop-X.Y.Z.all.bottle.tar.gz to the
                  release, push Formula/siltop.rb with the bottle block,
@@ -35,9 +35,11 @@ tag vX.Y.Z
 
 1. `CLoaKY233/homebrew-tap` is a public repository (the `homebrew-` prefix is
    required) with a `Formula/` directory.
-2. Make a fine-grained token (Contents: read and write on the tap only) and
-   store it in this repository as the Actions secret `HOMEBREW_TAP_TOKEN`.
-   Without it, releases still publish; only the tap bump is skipped.
+2. Make an SSH key pair (`ssh-keygen -t ed25519 -N "" -f tap_key`), add the
+   public half to the tap as a deploy key with write access, and store the
+   private half in this repository as the Actions secret `HOMEBREW_TAP_DEPLOY_KEY`.
+   The key can write to the tap and nothing else. Without it, releases still
+   publish; only the tap bump is skipped.
 3. Optional: a `HOMEBREW_TAP_REPO` variable for a different tap repository.
 
 The formula is rendered from [`packaging/homebrew/siltop.rb`](../packaging/homebrew/siltop.rb)
@@ -182,5 +184,5 @@ ruby -c /tmp/siltop.rb && brew style /tmp/siltop.rb
 | --- | --- | --- |
 | `APPLE_DEVELOPER_ID_P12`, `APPLE_DEVELOPER_ID_P12_PASSWORD`, `APPLE_DEVELOPER_ID` | secret, optional | codesign |
 | `APPLE_NOTARY_KEY`, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER` | secret, optional | notarization (needs codesign) |
-| `HOMEBREW_TAP_TOKEN` | secret, optional | tap bump |
+| `HOMEBREW_TAP_DEPLOY_KEY` | secret, optional | tap bump (SSH deploy key, write access to the tap only) |
 | `HOMEBREW_TAP_REPO` | variable, optional | another tap repository |

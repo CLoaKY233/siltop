@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "siltop"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "libc",
  "ratatui",
@@ -1287,7 +1287,7 @@ dependencies = [
 
 [[package]]
 name = "siltop-core"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "siltop-metrics"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "libc",
  "siltop-core",
@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "siltop-ui"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "insta",
  "ratatui",

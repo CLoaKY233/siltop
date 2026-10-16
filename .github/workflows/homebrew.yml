@@ -21,7 +21,7 @@ on:
         type: boolean
         default: false
     secrets:
-      HOMEBREW_TAP_TOKEN:
+      HOMEBREW_TAP_DEPLOY_KEY:
         required: false
   workflow_dispatch:
     inputs:
@@ -171,13 +171,18 @@ jobs:
       - name: push the formula to the tap
         if: env.PUBLISH == 'true'
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # An SSH deploy key with write access to the tap repository only.
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           FORMULA: ${{ steps.tap.outputs.formula }}
           VERSION: ${{ steps.src.outputs.version }}
         run: |
           set -euo pipefail
+          key="${RUNNER_TEMP}/tap_key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           tap="${RUNNER_TEMP}/tap"
-          gh repo clone "$HOMEBREW_TAP_REPO" "$tap" -- --depth 1
+          git clone --depth 1 "git@github.com:${HOMEBREW_TAP_REPO}.git" "$tap"
           mkdir -p "${tap}/Formula"
           cp "$FORMULA" "${tap}/Formula/siltop.rb"
           cd "$tap"
@@ -189,8 +194,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/siltop.rb
           git commit -m "siltop ${VERSION}."
-          gh auth setup-git
           git push origin HEAD
+          rm -f "$key"
 
       - name: a clean install from the published tap pours the bottle
         if: env.PUBLISH == 'true'

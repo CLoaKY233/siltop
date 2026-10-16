@@ -18,8 +18,11 @@ use serde::Deserialize;
 use crate::cli::{self, EXIT_ERROR};
 use crate::onboarding::Launch;
 
-/// The release JSON is a few kilobytes: a check that takes longer is offline.
+/// The release JSON is a few kilobytes: a background check that takes
+/// longer is offline, and it must never hold anything up.
 const CHECK_TIMEOUT: &str = "3";
+/// `siltop update` is waited on, so a slow link gets longer.
+const MANUAL_TIMEOUT: &str = "20";
 /// Seconds to open a connection, for both the check and the download.
 const CONNECT_TIMEOUT: &str = "10";
 /// A download slower than this many bytes a second...
@@ -40,6 +43,9 @@ pub fn endpoint() -> String {
     }
     String::from("https://api.github.com/repos/CLoaKY233/siltop/releases/latest")
 }
+
+/// Where siltop's source and releases live.
+const REPO_URL: &str = "https://github.com/CLoaKY233/siltop";
 
 /// What the GitHub API is asked to answer in.
 const GITHUB_JSON: &str = "application/vnd.github+json";
@@ -289,24 +295,26 @@ pub fn same_version(left: &str, right: &str) -> bool {
     }
 }
 
-/// The version in a `siltop --version` line such as
-/// `siltop 1.2.0 (abc1234)`, or the `siltop 1.1.1` of older builds.
+/// The version in a `siltop --version` line such as `siltop 1.2.0 (abc1234)`.
 #[must_use]
 pub fn reported_version(line: &str) -> Option<&str> {
-    let first = line.lines().next()?.trim();
-    // 1.1 and earlier printed `siltop <version>`.
-    first
-        .strip_prefix("siltop ")
-        .or_else(|| first.strip_prefix("siltop "))?
+    line.lines()
+        .next()?
+        .trim()
+        .strip_prefix("siltop ")?
         .split_whitespace()
         .next()
 }
 
-/// How this binary was installed. A keg is never replaced in place.
+/// How this binary was installed. Only a release download replaces itself:
+/// a keg belongs to Homebrew and a cargo build to cargo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallKind {
     Brew,
-    Curl,
+    Cargo,
+    /// A release archive unpacked into a `bin` directory, such as
+    /// `~/.local/bin`, `~/bin` or `/usr/local/bin`.
+    Download,
     Other,
 }
 
@@ -315,39 +323,46 @@ impl InstallKind {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Brew => "brew",
-            Self::Curl => "curl",
+            Self::Cargo => "cargo",
+            Self::Download => "download",
             Self::Other => "other",
         }
     }
 }
 
-/// `Cellar` in the canonical path is a Homebrew keg. A binary under the
-/// user's home (the curl installer, `~/bin`, or `--prefix`) can replace
-/// itself. Anything else is left alone.
+/// System directories that are never ours to write, even as root.
+const SYSTEM_BINS: [&str; 4] = ["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
+
+/// `Cellar` in the canonical path is a Homebrew keg, and `.cargo/bin` (or
+/// `$CARGO_HOME/bin`) is `cargo install`'s. Any other `bin` directory holds
+/// a release download, which can replace itself. A binary anywhere else,
+/// such as a build in `target/release`, is left alone.
 #[must_use]
 pub fn install_kind(exe: &Path) -> InstallKind {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    classify(exe, home.as_deref())
+    let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
+    classify(exe, cargo_home.as_deref())
 }
 
-/// `home` is the directory a curl install lives under. Tests pass it
-/// directly so they do not have to change the process environment.
+/// `cargo_home` is `$CARGO_HOME` when set. Tests pass it directly so they
+/// do not have to change the process environment.
 #[must_use]
-pub fn classify(exe: &Path, home: Option<&Path>) -> InstallKind {
+pub fn classify(exe: &Path, cargo_home: Option<&Path>) -> InstallKind {
     let canon = fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
-    let text = canon.to_string_lossy();
-    if text.contains("/Cellar/") {
+    if canon.to_string_lossy().contains("/Cellar/") {
         return InstallKind::Brew;
     }
-    let home = home.map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
-    // The installer only ever writes <dir>/bin/siltop (~/.local/bin, ~/bin, <prefix>/bin).
-    // Anything else under home, such as a cargo build in target/release, is not ours to replace.
-    let in_bin = canon
-        .parent()
-        .and_then(Path::file_name)
-        .is_some_and(|dir| dir == "bin");
-    if in_bin && home.is_some_and(|home| canon.starts_with(home)) {
-        InstallKind::Curl
+    let Some(dir) = canon.parent() else {
+        return InstallKind::Other;
+    };
+    let cargo_bin = cargo_home
+        .map(|home| fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()))
+        .is_some_and(|home| dir == home.join("bin"));
+    if cargo_bin || dir.ends_with(".cargo/bin") {
+        return InstallKind::Cargo;
+    }
+    let in_bin = dir.file_name().is_some_and(|name| name == "bin");
+    if in_bin && !SYSTEM_BINS.iter().any(|system| dir == Path::new(system)) {
+        InstallKind::Download
     } else {
         InstallKind::Other
     }
@@ -359,6 +374,9 @@ pub struct State {
     pub last_check: Option<u64>,
     /// A version the user asked to skip.
     pub skipped: String,
+    /// The newer version the last check found, so a launch inside the
+    /// throttle window still offers it.
+    pub available: String,
 }
 
 impl State {
@@ -372,20 +390,26 @@ impl State {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
+            let value = value.trim().trim_matches('"');
             match key.trim() {
-                "last_check" => state.last_check = value.trim().parse().ok(),
-                "skipped" => value.trim().clone_into(&mut state.skipped),
+                "last_check" => state.last_check = value.parse().ok(),
+                "skipped" => value.clone_into(&mut state.skipped),
+                "available" => value.clone_into(&mut state.available),
                 _ => {}
             }
         }
         state
     }
 
+    /// Written as TOML. Versions are plain `1.2.3` strings, so they need no escaping.
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        let last_check = self
+            .last_check
+            .map(|then| format!("last_check = {then}\n"))
+            .unwrap_or_default();
         let text = format!(
-            "last_check={}\nskipped={}\n",
-            self.last_check.map(|n| n.to_string()).unwrap_or_default(),
-            self.skipped
+            "{last_check}skipped = \"{}\"\navailable = \"{}\"\n",
+            self.skipped, self.available
         );
         crate::config_io::atomic_write(path, &text)
     }
@@ -417,13 +441,27 @@ pub fn should_check(
     launch: Launch,
     forced_off: bool,
 ) -> bool {
-    if !opted_in || forced_off || launch.suppressed() {
+    if !opted_in || forced_off || launch.non_interactive() {
         return false;
+    }
+    // A known, unskipped update is fetched again so it can still be offered.
+    if !state.available.is_empty()
+        && state.available != state.skipped
+        && is_newer(cli::VERSION, &state.available)
+    {
+        return true;
     }
     match state.last_check {
         Some(then) => now.saturating_sub(then) >= THROTTLE.as_secs(),
         None => true,
     }
+}
+
+/// `SILTOP_NO_UPDATE_CHECK=1` (any value but empty, `0` or `false`).
+#[must_use]
+pub fn forced_off() -> bool {
+    std::env::var("SILTOP_NO_UPDATE_CHECK")
+        .is_ok_and(|value| !matches!(value.trim(), "" | "0" | "false"))
 }
 
 /// A newer release the user has not skipped.
@@ -451,9 +489,15 @@ impl std::fmt::Display for FetchError {
 /// `digest` when the release has one, else its `.sha256` asset. A network
 /// failure is [`FetchError::Offline`]: the caller stays quiet.
 pub fn fetch(url: &str) -> Result<Manifest, FetchError> {
+    fetch_with(url, Limit::Check)
+}
+
+/// [`fetch`] with the background check's short cap, or the manual
+/// command's longer one.
+fn fetch_with(url: &str, limit: Limit) -> Result<Manifest, FetchError> {
     let offline = |err: io::Error| FetchError::Offline(err.to_string());
     let not_utf8 = || FetchError::Manifest(ManifestError::Json(String::from("not utf-8")));
-    let body = curl(url, None, Limit::Check, Some(GITHUB_JSON)).map_err(offline)?;
+    let body = curl(url, None, limit, Some(GITHUB_JSON)).map_err(offline)?;
     let text = String::from_utf8(body).map_err(|_| not_utf8())?;
     let release = parse_release(&text).map_err(FetchError::Manifest)?;
     if let Some(sha256) = release.sha256.clone() {
@@ -463,7 +507,7 @@ pub fn fetch(url: &str) -> Result<Manifest, FetchError> {
         .sha256_url
         .clone()
         .ok_or(FetchError::Manifest(ManifestError::Missing("sha256")))?;
-    let body = curl(&sha_url, None, Limit::Check, None).map_err(offline)?;
+    let body = curl(&sha_url, None, limit, None).map_err(offline)?;
     let text = String::from_utf8(body).map_err(|_| not_utf8())?;
     let sha256 = parse_sha256_file(&text).map_err(FetchError::Manifest)?;
     Ok(release.into_manifest(sha256))
@@ -474,6 +518,7 @@ pub fn fetch(url: &str) -> Result<Manifest, FetchError> {
 #[derive(Debug, Clone, Copy)]
 enum Limit {
     Check,
+    Manual,
     Download,
 }
 
@@ -485,6 +530,7 @@ fn curl(url: &str, out: Option<&Path>, limit: Limit, accept: Option<&str>) -> io
     cmd.args(["-q", "-fsS", "--connect-timeout", CONNECT_TIMEOUT]);
     match limit {
         Limit::Check => cmd.args(["--max-time", CHECK_TIMEOUT]),
+        Limit::Manual => cmd.args(["--max-time", MANUAL_TIMEOUT]),
         Limit::Download => cmd.args(["--speed-limit", STALL_BYTES, "--speed-time", STALL_SECS]),
     };
     cmd.args(["-A", &user_agent()]);
@@ -506,8 +552,9 @@ fn curl(url: &str, out: Option<&Path>, limit: Limit, accept: Option<&str>) -> io
     cmd.arg(url);
     let output = cmd.output()?;
     if !output.status.success() {
-        let why = String::from_utf8_lossy(&output.stderr);
-        return Err(io::Error::other(why.trim().to_owned()));
+        return Err(io::Error::other(curl_reason(&String::from_utf8_lossy(
+            &output.stderr,
+        ))));
     }
     if out.is_some() {
         return Ok(Vec::new());
@@ -515,12 +562,32 @@ fn curl(url: &str, out: Option<&Path>, limit: Limit, accept: Option<&str>) -> io
     Ok(output.stdout)
 }
 
+/// curl's error as one line. GitHub answers 403 when an address has used up
+/// its 60 unauthenticated API calls for the hour.
+fn curl_reason(stderr: &str) -> String {
+    let first = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("curl failed");
+    if first.contains("error: 403") || first.contains("error: 429") {
+        String::from("GitHub is rate-limiting this address; try again in an hour")
+    } else {
+        first.trim_start_matches("curl: ").to_owned()
+    }
+}
+
 /// Why an install or a rollback stopped. The old binary is still the one on disk.
 #[derive(Debug)]
 pub enum InstallError {
     Brew,
+    /// The version to ask cargo for.
+    Cargo(String),
+    /// The release page to download from instead.
     Other(String),
-    NotWritable,
+    /// The directory this user cannot write, with the archive URL to
+    /// download by hand (empty when unknown).
+    NotWritable(String),
     /// The running binary's path could not be resolved.
     Exe(String),
     Download(String),
@@ -534,7 +601,7 @@ pub enum InstallError {
         got: String,
     },
     Swap(String),
-    /// Rollback on a copy the curl installer does not own.
+    /// Rollback on a copy that `siltop update` did not install.
     RollbackBrew,
     RollbackOther,
     /// Rollback with no `<name>.old` beside the binary.
@@ -545,11 +612,21 @@ impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Brew => write!(f, "this copy is a Homebrew keg; run `brew upgrade siltop`"),
+            Self::Cargo(version) => write!(
+                f,
+                "this copy was installed by cargo, so cargo should replace it: `cargo install --git {REPO_URL} --tag v{version} siltop --locked`"
+            ),
             Self::Other(url) => write!(
                 f,
-                "this copy was not installed by the curl installer, so it is not replaced; download the update from {url}"
+                "this copy is not in a bin directory (a local build?), so it is not replaced; download the update from {url}"
             ),
-            Self::NotWritable => write!(f, "the install directory is not writable"),
+            Self::NotWritable(url) if url.is_empty() => {
+                write!(f, "you cannot write to the directory this copy is in")
+            }
+            Self::NotWritable(url) => write!(
+                f,
+                "you cannot write to the directory this copy is in; run `sudo siltop update --yes`, or download the update from {url}"
+            ),
             Self::Exe(why) => write!(f, "could not find the running binary: {why}"),
             Self::Download(why) => write!(f, "the download failed: {why}"),
             Self::Sha => write!(f, "the download's sha256 does not match"),
@@ -565,11 +642,11 @@ impl std::fmt::Display for InstallError {
             Self::Swap(why) => write!(f, "could not replace the binary: {why}"),
             Self::RollbackBrew => write!(
                 f,
-                "this copy is a Homebrew keg, and rollback is only for a curl install; Homebrew manages its versions (`brew upgrade siltop`)"
+                "this copy is a Homebrew keg, so rollback does not apply; Homebrew manages its versions (`brew upgrade siltop`)"
             ),
             Self::RollbackOther => write!(
                 f,
-                "rollback is only for a curl install; this copy was installed another way, so replace it the same way"
+                "rollback only restores a copy that `siltop update` replaced; this one was installed another way"
             ),
             Self::NoOld(name) => write!(f, "there is no {name} to restore"),
         }
@@ -622,29 +699,39 @@ fn old_path(exe: &Path) -> Result<PathBuf, InstallError> {
     Ok(exe.with_file_name(old))
 }
 
-/// Replace a curl install with `manifest`, or explain why not.
+/// Replace a release download with `manifest`, or explain why not.
 /// Any failure leaves the current binary in place.
 pub fn install(exe: &Path, manifest: &Manifest) -> Result<(), InstallError> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    install_in(exe, manifest, home.as_deref())
+    let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
+    install_in(exe, manifest, cargo_home.as_deref())
 }
 
-/// [`install`] with an explicit home, so a test does not race on `HOME`.
+/// Why `kind` may not replace itself, or `None` when it may.
+fn refusal(kind: InstallKind, manifest: &Manifest) -> Option<InstallError> {
+    match kind {
+        InstallKind::Brew => Some(InstallError::Brew),
+        InstallKind::Cargo => Some(InstallError::Cargo(manifest.version.clone())),
+        InstallKind::Other => Some(InstallError::Other(manifest.url.clone())),
+        InstallKind::Download => None,
+    }
+}
+
+/// [`install`] with an explicit `$CARGO_HOME`, so a test does not race on the environment.
 pub fn install_in(
     exe: &Path,
     manifest: &Manifest,
-    home: Option<&Path>,
+    cargo_home: Option<&Path>,
 ) -> Result<(), InstallError> {
-    match classify(exe, home) {
-        InstallKind::Brew => return Err(InstallError::Brew),
-        InstallKind::Other => return Err(InstallError::Other(manifest.url.clone())),
-        InstallKind::Curl => {}
+    if let Some(why) = refusal(classify(exe, cargo_home), manifest) {
+        return Err(why);
     }
     let dest = resolve(exe)?;
     let old = old_path(&dest)?;
-    let dir = dest.parent().ok_or(InstallError::NotWritable)?;
-    if fs::metadata(dir).is_ok_and(|meta| meta.permissions().readonly()) {
-        return Err(InstallError::NotWritable);
+    let dir = dest
+        .parent()
+        .ok_or(InstallError::NotWritable(String::new()))?;
+    if !writable(dir) {
+        return Err(InstallError::NotWritable(manifest.url.clone()));
     }
     let scratch = Scratch::new(dir);
     curl(&manifest.url, Some(&scratch.archive), Limit::Download, None)
@@ -654,7 +741,8 @@ pub fn install_in(
     if !digest.eq_ignore_ascii_case(&manifest.sha256) {
         return Err(InstallError::Sha);
     }
-    fs::create_dir_all(&scratch.staging).map_err(|_| InstallError::NotWritable)?;
+    fs::create_dir_all(&scratch.staging)
+        .map_err(|_| InstallError::NotWritable(manifest.url.clone()))?;
     let unpacked = Command::new("/usr/bin/tar")
         .args(["-xzf"])
         .arg(&scratch.archive)
@@ -695,17 +783,23 @@ pub fn install_in(
     Ok(())
 }
 
-/// The binary in an unpacked release: `siltop` from 1.2 on, or the
-/// `siltop` that 1.1 and earlier archives held, at the top or one folder down.
+/// Whether this user can create files in `dir`: the permission bits do not
+/// say, since `/usr/local/bin` may belong to root or to the admin group.
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(".siltop-write-probe");
+    let created = fs::File::create(&probe).is_ok();
+    let _ = fs::remove_file(&probe);
+    created
+}
+
+/// The `siltop` binary in an unpacked release, at the top or one folder down.
 fn find_binary(root: &Path) -> Option<PathBuf> {
-    const NAMES: [&str; 2] = ["siltop", "siltop"];
     let mut dirs = vec![root.to_path_buf()];
     if let Ok(entries) = fs::read_dir(root) {
         dirs.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
     }
-    NAMES
-        .iter()
-        .flat_map(|name| dirs.iter().map(move |dir| dir.join(name)))
+    dirs.iter()
+        .map(|dir| dir.join("siltop"))
         .find(|path| path.is_file())
 }
 
@@ -740,17 +834,17 @@ fn file_sha256(path: &Path) -> io::Result<String> {
     Ok(hex.to_ascii_lowercase())
 }
 
-/// Put `<name>.old` back over this copy. Curl installs only.
+/// Put `<name>.old` back over this copy. Release downloads only.
 pub fn rollback(exe: &Path) -> Result<(), InstallError> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    rollback_in(exe, home.as_deref())
+    let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
+    rollback_in(exe, cargo_home.as_deref())
 }
 
-pub fn rollback_in(exe: &Path, home: Option<&Path>) -> Result<(), InstallError> {
-    match classify(exe, home) {
+pub fn rollback_in(exe: &Path, cargo_home: Option<&Path>) -> Result<(), InstallError> {
+    match classify(exe, cargo_home) {
         InstallKind::Brew => return Err(InstallError::RollbackBrew),
-        InstallKind::Other => return Err(InstallError::RollbackOther),
-        InstallKind::Curl => {}
+        InstallKind::Cargo | InstallKind::Other => return Err(InstallError::RollbackOther),
+        InstallKind::Download => {}
     }
     let dest = resolve(exe)?;
     let old = old_path(&dest)?;
@@ -761,7 +855,9 @@ pub fn rollback_in(exe: &Path, home: Option<&Path>) -> Result<(), InstallError> 
         );
         return Err(InstallError::NoOld(name));
     }
-    let dir = dest.parent().ok_or(InstallError::NotWritable)?;
+    let dir = dest
+        .parent()
+        .ok_or(InstallError::NotWritable(String::new()))?;
     let aside = dir.join(".siltop-rollback");
     let _ = fs::remove_file(&aside);
     if dest.exists() {
@@ -780,10 +876,13 @@ pub const EXIT_UPDATE: u8 = 10;
 
 /// What bare `siltop update` prints after "`<version>` available".
 #[must_use]
-pub fn how_to_install(kind: InstallKind, url: &str) -> String {
+pub fn how_to_install(kind: InstallKind, version: &str, url: &str) -> String {
     match kind {
-        InstallKind::Curl => String::from("install it with `siltop update --yes`"),
+        InstallKind::Download => String::from("install it with `siltop update --yes`"),
         InstallKind::Brew => String::from("install it with `brew upgrade siltop`"),
+        InstallKind::Cargo => format!(
+            "install it with `cargo install --git {REPO_URL} --tag v{version} siltop --locked`"
+        ),
         InstallKind::Other => format!("download it from {url}"),
     }
 }
@@ -815,7 +914,7 @@ pub fn command(action: cli::UpdateAction, out: &mut dyn Write, err: &mut dyn Wri
             }
         };
     }
-    let manifest = match fetch(&endpoint()) {
+    let manifest = match fetch_with(&endpoint(), Limit::Manual) {
         Ok(manifest) => manifest,
         Err(FetchError::Offline(why)) => {
             let _ = writeln!(err, "siltop: could not reach GitHub: {why}");
@@ -841,11 +940,15 @@ pub fn command(action: cli::UpdateAction, out: &mut dyn Write, err: &mut dyn Wri
                 "{} available (you have {}); {}",
                 manifest.version,
                 cli::VERSION,
-                how_to_install(install_kind(&exe), &manifest.url)
+                how_to_install(install_kind(&exe), &manifest.version, &manifest.url)
             );
             return 0;
         }
         cli::UpdateAction::Yes | cli::UpdateAction::Rollback => {}
+    }
+    if let Some(why) = refusal(install_kind(&exe), &manifest) {
+        let _ = writeln!(err, "siltop: {why}");
+        return EXIT_ERROR;
     }
     let _ = writeln!(err, "siltop: downloading {}", manifest.version);
     match install(&exe, &manifest) {
@@ -879,9 +982,9 @@ pub struct DialogEffect {
     pub install_now: bool,
 }
 
-/// Apply a dialog choice. "Always" turns on quiet installs for the next
-/// check and does not install this version. "Skip" hides this version.
-/// "Later" changes nothing.
+/// Apply a dialog choice. "Always" installs this version now and turns on
+/// quiet installs for later ones. "Skip" hides this version. "Later"
+/// changes nothing.
 pub fn apply_dialog(
     choice: DialogChoice,
     version: &str,
@@ -892,7 +995,7 @@ pub fn apply_dialog(
         DialogChoice::Now => DialogEffect { install_now: true },
         DialogChoice::Always => {
             config.updates_auto_install = true;
-            DialogEffect { install_now: false }
+            DialogEffect { install_now: true }
         }
         DialogChoice::Skip => {
             version.clone_into(&mut state.skipped);
@@ -902,7 +1005,7 @@ pub fn apply_dialog(
     }
 }
 
-/// What a finished check should do. Auto-install only replaces a curl copy,
+/// What a finished check should do. Auto-install only replaces a release download,
 /// and only when a newer version is actually available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckPlan {
@@ -915,7 +1018,7 @@ pub enum CheckPlan {
 pub fn plan_check(auto_install: bool, kind: InstallKind, newer: bool) -> CheckPlan {
     if !newer {
         CheckPlan::Quiet
-    } else if auto_install && kind == InstallKind::Curl {
+    } else if auto_install && kind == InstallKind::Download {
         CheckPlan::Install
     } else {
         CheckPlan::Offer
@@ -925,22 +1028,25 @@ pub fn plan_check(auto_install: bool, kind: InstallKind, newer: bool) -> CheckPl
 /// Stamp `last_check` and return a manifest when one should be offered.
 /// Offline and a parse error return `Ok(None)`: nothing is shown.
 pub fn automatic(opted_in: bool, launch: Launch) -> Option<Manifest> {
-    if std::env::var_os("SILTOP_NO_UPDATE_CHECK").is_some() {
-        return None;
-    }
     let path = state_path();
     let state = path.as_deref().map(State::load).unwrap_or_default();
-    if !should_check(opted_in, &state, now_secs(), launch, false) {
+    if !should_check(opted_in, &state, now_secs(), launch, forced_off()) {
         return None;
     }
     let skipped = state.skipped.clone();
-    let manifest = fetch(&endpoint()).ok();
+    let offered = fetch(&endpoint())
+        .ok()
+        .filter(|manifest| offer(cli::VERSION, manifest, &skipped));
     if let Some(path) = path.as_deref() {
         let mut state = state;
         state.last_check = Some(now_secs());
+        state.available = offered
+            .as_ref()
+            .map(|manifest| manifest.version.clone())
+            .unwrap_or_default();
         let _ = state.save(path);
     }
-    manifest.filter(|manifest| offer(cli::VERSION, manifest, &skipped))
+    offered
 }
 
 #[cfg(test)]
@@ -1185,7 +1291,7 @@ mod tests {
         assert!(!should_check(true, &fresh, 1_000, launch, true));
         let recent = State {
             last_check: Some(1_000),
-            skipped: String::new(),
+            ..State::default()
         };
         assert!(!should_check(true, &recent, 1_000 + 60, launch, false));
         assert!(should_check(
@@ -1201,6 +1307,23 @@ mod tests {
         let mut ci = launch;
         ci.ci = true;
         assert!(!should_check(true, &fresh, 1_000, ci, false));
+        // SILTOP_NO_ONBOARDING skips the screens, not an opted-in check.
+        let mut no_onboarding = launch;
+        no_onboarding.disabled = true;
+        assert!(should_check(true, &fresh, 1_000, no_onboarding, false));
+        // A known update is offered again inside the throttle window,
+        // unless it was skipped.
+        let pending = State {
+            last_check: Some(1_000),
+            available: String::from("99.0.0"),
+            ..State::default()
+        };
+        assert!(should_check(true, &pending, 1_000 + 60, launch, false));
+        let skipped = State {
+            skipped: String::from("99.0.0"),
+            ..pending
+        };
+        assert!(!should_check(true, &skipped, 1_000 + 60, launch, false));
     }
 
     #[test]
@@ -1219,36 +1342,77 @@ mod tests {
         let state = State {
             last_check: Some(1_700_000_000),
             skipped: String::from("1.1.1"),
+            available: String::from("1.2.0"),
         };
         state.save(&path).unwrap();
         assert_eq!(State::load(&path), state);
+        // The file is real TOML, empty values included.
+        let text = fs::read_to_string(&path).unwrap();
+        let parsed: toml_edit::DocumentMut = text.parse().unwrap();
+        assert_eq!(parsed["skipped"].as_str(), Some("1.1.1"));
+        State::default().save(&path).unwrap();
+        let empty: toml_edit::DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(empty["skipped"].as_str(), Some(""));
     }
 
     #[test]
-    fn a_keg_is_brew_and_a_home_bin_is_curl() {
+    fn a_keg_is_brew_cargo_is_cargo_and_any_other_bin_is_a_download() {
         let dir = Temp::new("kind");
-        let cellar = dir.0.join("opt/homebrew/Cellar/siltop/1.0.0/bin");
-        fs::create_dir_all(&cellar).unwrap();
-        let keg = cellar.join("siltop");
-        fs::write(&keg, b"keg").unwrap();
-        assert_eq!(classify(&keg, None), InstallKind::Brew);
-        let home = dir.0.join("home");
-        let bin = home.join(".local/bin");
-        fs::create_dir_all(&bin).unwrap();
-        let curl_bin = bin.join("siltop");
-        fs::write(&curl_bin, b"curl").unwrap();
-        assert_eq!(classify(&curl_bin, Some(&home)), InstallKind::Curl);
-        // a cargo build under home is a developer's copy, never replaced
-        let target = home.join("dev/siltop/target/release");
-        fs::create_dir_all(&target).unwrap();
-        let dev_bin = target.join("siltop");
-        fs::write(&dev_bin, b"dev").unwrap();
-        assert_eq!(classify(&dev_bin, Some(&home)), InstallKind::Other);
-        let other = dir.0.join("usr/local/bin");
-        fs::create_dir_all(&other).unwrap();
-        let sys = other.join("siltop");
-        fs::write(&sys, b"sys").unwrap();
-        assert_eq!(classify(&sys, Some(&home)), InstallKind::Other);
+        let place = |rel: &str| {
+            let bin = dir.0.join(rel);
+            fs::create_dir_all(&bin).unwrap();
+            let exe = bin.join("siltop");
+            fs::write(&exe, b"x").unwrap();
+            exe
+        };
+        assert_eq!(
+            classify(&place("opt/homebrew/Cellar/siltop/1.0.0/bin"), None),
+            InstallKind::Brew
+        );
+        assert_eq!(
+            classify(&place("home/.local/bin"), None),
+            InstallKind::Download
+        );
+        // /usr/local/bin is a common place to unpack a download.
+        assert_eq!(
+            classify(&place("usr/local/bin"), None),
+            InstallKind::Download
+        );
+        // `cargo install` owns ~/.cargo/bin, and $CARGO_HOME/bin when set.
+        assert_eq!(
+            classify(&place("home/.cargo/bin"), None),
+            InstallKind::Cargo
+        );
+        let cargo_home = dir.0.join("rust/cargo");
+        assert_eq!(
+            classify(&place("rust/cargo/bin"), Some(&cargo_home)),
+            InstallKind::Cargo
+        );
+        // A build in target/release is a developer's copy, never replaced.
+        assert_eq!(
+            classify(&place("home/dev/siltop/target/release"), None),
+            InstallKind::Other
+        );
+        assert_eq!(
+            classify(Path::new("/usr/bin/siltop"), None),
+            InstallKind::Other
+        );
+    }
+
+    #[test]
+    fn curl_errors_are_one_line_and_a_rate_limit_says_so() {
+        let tls = "curl: (60) SSL certificate problem: self signed certificate\nMore details here: https://curl.se/docs/sslcerts.html\n\ncurl failed to verify the legitimacy of the server\n";
+        assert_eq!(
+            curl_reason(tls),
+            "(60) SSL certificate problem: self signed certificate"
+        );
+        let limited = "curl: (22) The requested URL returned error: 403\n";
+        assert!(
+            curl_reason(limited).contains("rate-limiting"),
+            "{}",
+            curl_reason(limited)
+        );
+        assert_eq!(curl_reason(""), "curl failed");
     }
 
     /// A loopback server for up to four requests: `/latest` answers `body`
@@ -1344,13 +1508,13 @@ mod tests {
         let mut bad_sha = mismatch.clone();
         bad_sha.url = format!("{base}/file");
         bad_sha.sha256 = "a".repeat(64);
-        let err = install_in(&exe, &bad_sha, Some(&home)).unwrap_err();
+        let err = install_in(&exe, &bad_sha, None).unwrap_err();
         assert!(matches!(err, InstallError::Sha), "{err}");
         assert_eq!(fs::read(&exe).unwrap(), b"original-binary");
 
         let mut truncated = bad_sha.clone();
         truncated.sha256 = file_sha256_for_test(bytes);
-        let err = install_in(&exe, &truncated, Some(&home)).unwrap_err();
+        let err = install_in(&exe, &truncated, None).unwrap_err();
         assert!(matches!(err, InstallError::Archive(_)), "{err}");
         assert_eq!(fs::read(&exe).unwrap(), b"original-binary");
 
@@ -1359,7 +1523,7 @@ mod tests {
         let mut perms = fs::metadata(&readonly).unwrap().permissions();
         perms.set_readonly(true);
         fs::set_permissions(&readonly, perms).unwrap();
-        // A curl install whose directory is read-only.
+        // A download whose directory is read-only.
         let ro_home = dir.0.join("rohome");
         let ro_bin = ro_home.join(".local/bin");
         fs::create_dir_all(&ro_bin).unwrap();
@@ -1368,8 +1532,8 @@ mod tests {
         let mut ro_perms = fs::metadata(&ro_bin).unwrap().permissions();
         ro_perms.set_readonly(true);
         fs::set_permissions(&ro_bin, ro_perms.clone()).unwrap();
-        let err = install_in(&ro_exe, &truncated, Some(&ro_home)).unwrap_err();
-        assert!(matches!(err, InstallError::NotWritable), "{err}");
+        let err = install_in(&ro_exe, &truncated, None).unwrap_err();
+        assert!(matches!(err, InstallError::NotWritable(_)), "{err}");
         assert_eq!(fs::read(&ro_exe).unwrap(), b"original-binary");
         #[cfg(unix)]
         {
@@ -1392,13 +1556,13 @@ mod tests {
                     assert!(state.skipped.is_empty());
                 }
                 DialogChoice::Always => {
-                    assert!(!effect.install_now);
+                    assert!(effect.install_now, "Always installs this version too");
                     assert!(config.updates_auto_install);
                     assert!(state.skipped.is_empty());
                     assert_eq!(
-                        plan_check(config.updates_auto_install, InstallKind::Curl, true),
+                        plan_check(config.updates_auto_install, InstallKind::Download, true),
                         CheckPlan::Install,
-                        "the next check installs a curl copy without asking"
+                        "the next check installs a download without asking"
                     );
                     assert_eq!(
                         plan_check(config.updates_auto_install, InstallKind::Brew, true),
@@ -1417,11 +1581,17 @@ mod tests {
                     assert!(!effect.install_now);
                     assert!(!config.updates_auto_install);
                     assert!(state.skipped.is_empty());
-                    assert_eq!(plan_check(false, InstallKind::Curl, true), CheckPlan::Offer);
+                    assert_eq!(
+                        plan_check(false, InstallKind::Download, true),
+                        CheckPlan::Offer
+                    );
                 }
             }
         }
-        assert_eq!(plan_check(true, InstallKind::Curl, false), CheckPlan::Quiet);
+        assert_eq!(
+            plan_check(true, InstallKind::Download, false),
+            CheckPlan::Quiet
+        );
     }
 
     fn file_sha256_for_test(bytes: &[u8]) -> String {
@@ -1470,7 +1640,7 @@ mod tests {
             sha256: file_sha256(&archive).unwrap(),
             notes: String::new(),
         };
-        let err = install_in(&exe, &manifest, Some(&home)).unwrap_err();
+        let err = install_in(&exe, &manifest, None).unwrap_err();
         assert!(matches!(err, InstallError::Version { .. }), "{err}");
         assert_eq!(fs::read(&exe).unwrap(), b"original-binary");
         assert!(!bin.join("siltop.old").exists());
@@ -1514,14 +1684,14 @@ mod tests {
             sha256: file_sha256(&archive).unwrap(),
             notes: String::from("notes"),
         };
-        install_in(&exe, &manifest, Some(&home)).unwrap();
+        install_in(&exe, &manifest, None).unwrap();
         let installed = fs::read_to_string(&exe).unwrap();
         assert!(installed.contains("9.9.9"), "{installed}");
         assert_eq!(
             fs::read(bin.join("siltop.old")).unwrap(),
             b"original-binary"
         );
-        rollback_in(&exe, Some(&home)).unwrap();
+        rollback_in(&exe, None).unwrap();
         assert_eq!(fs::read(&exe).unwrap(), b"original-binary");
     }
 
@@ -1586,13 +1756,13 @@ mod tests {
     #[test]
     fn a_prerelease_binary_is_not_installed_as_the_release() {
         let dir = Temp::new("pre");
-        let (home, exe, manifest) = staged(
+        let (_, exe, manifest) = staged(
             &dir.0,
             "siltop",
             "1.1.0",
             "#!/bin/sh\necho siltop 1.1.0-rc.1\n",
         );
-        let err = install_in(&exe, &manifest, Some(&home)).unwrap_err();
+        let err = install_in(&exe, &manifest, None).unwrap_err();
         assert!(matches!(err, InstallError::Version { .. }), "{err}");
         assert_eq!(fs::read(&exe).unwrap(), b"original-binary");
         no_scratch_left(&exe);
@@ -1601,9 +1771,9 @@ mod tests {
     #[test]
     fn a_longer_patch_number_is_not_a_match() {
         let dir = Temp::new("patch");
-        let (home, exe, manifest) =
+        let (_, exe, manifest) =
             staged(&dir.0, "siltop", "1.1.1", "#!/bin/sh\necho siltop 1.1.10\n");
-        let err = install_in(&exe, &manifest, Some(&home)).unwrap_err();
+        let err = install_in(&exe, &manifest, None).unwrap_err();
         assert!(matches!(err, InstallError::Version { .. }), "{err}");
         assert_eq!(fs::read(&exe).unwrap(), b"original-binary");
         no_scratch_left(&exe);
@@ -1612,13 +1782,13 @@ mod tests {
     #[test]
     fn a_binary_that_does_not_run_is_an_exec_error_not_a_version() {
         let dir = Temp::new("exec");
-        let (home, exe, manifest) = staged(
+        let (_, exe, manifest) = staged(
             &dir.0,
             "siltop",
             "9.9.9",
             "#!/bin/sh\necho broken >&2\nexit 3\n",
         );
-        let err = install_in(&exe, &manifest, Some(&home)).unwrap_err();
+        let err = install_in(&exe, &manifest, None).unwrap_err();
         assert!(matches!(err, InstallError::Exec(_)), "{err}");
         let text = err.to_string();
         assert!(
@@ -1632,17 +1802,17 @@ mod tests {
     #[test]
     fn a_failed_download_or_bad_sha_leaves_no_scratch_files() {
         let dir = Temp::new("scratch");
-        let (home, exe, mut manifest) =
+        let (_, exe, mut manifest) =
             staged(&dir.0, "siltop", "9.9.9", "#!/bin/sh\necho siltop 9.9.9\n");
         manifest.sha256 = "a".repeat(64);
         assert!(matches!(
-            install_in(&exe, &manifest, Some(&home)),
+            install_in(&exe, &manifest, None),
             Err(InstallError::Sha)
         ));
         no_scratch_left(&exe);
         manifest.url = String::from("http://127.0.0.1:1/file");
         assert!(matches!(
-            install_in(&exe, &manifest, Some(&home)),
+            install_in(&exe, &manifest, None),
             Err(InstallError::Download(_))
         ));
         no_scratch_left(&exe);
@@ -1651,11 +1821,11 @@ mod tests {
     #[test]
     fn a_renamed_copy_updates_and_rolls_back_itself_not_its_sibling() {
         let dir = Temp::new("renamed");
-        let (home, exe, manifest) =
+        let (_, exe, manifest) =
             staged(&dir.0, "pt-copy", "9.9.9", "#!/bin/sh\necho siltop 9.9.9\n");
         let sibling = exe.with_file_name("siltop");
         fs::write(&sibling, b"sibling").unwrap();
-        install_in(&exe, &manifest, Some(&home)).unwrap();
+        install_in(&exe, &manifest, None).unwrap();
         assert!(fs::read_to_string(&exe).unwrap().contains("9.9.9"));
         assert_eq!(
             fs::read(exe.with_file_name("pt-copy.old")).unwrap(),
@@ -1663,10 +1833,10 @@ mod tests {
         );
         assert_eq!(fs::read(&sibling).unwrap(), b"sibling");
         assert!(!exe.with_file_name("siltop.old").exists());
-        rollback_in(&exe, Some(&home)).unwrap();
+        rollback_in(&exe, None).unwrap();
         assert_eq!(fs::read(&exe).unwrap(), b"original-binary");
         assert_eq!(fs::read(&sibling).unwrap(), b"sibling");
-        let err = rollback_in(&exe, Some(&home)).unwrap_err();
+        let err = rollback_in(&exe, None).unwrap_err();
         assert_eq!(err.to_string(), "there is no pt-copy.old to restore");
     }
 
@@ -1684,8 +1854,11 @@ mod tests {
 
     #[test]
     fn bare_update_says_how_to_install_for_each_kind() {
-        assert!(how_to_install(InstallKind::Curl, "u").contains("siltop update --yes"));
-        assert!(how_to_install(InstallKind::Brew, "u").contains("brew upgrade siltop"));
-        assert!(how_to_install(InstallKind::Other, "https://x/p").contains("https://x/p"));
+        assert!(
+            how_to_install(InstallKind::Download, "1.3.0", "u").contains("siltop update --yes")
+        );
+        assert!(how_to_install(InstallKind::Brew, "1.3.0", "u").contains("brew upgrade siltop"));
+        assert!(how_to_install(InstallKind::Cargo, "1.3.0", "u").contains("--tag v1.3.0"));
+        assert!(how_to_install(InstallKind::Other, "1.3.0", "https://x/p").contains("https://x/p"));
     }
 }

@@ -11,8 +11,6 @@ class Siltop < Formula
   desc "Apple Silicon system monitor for the terminal: watts, clocks and temperatures"
   homepage "https://github.com/@REPO@"
   url "https://github.com/@REPO@/releases/download/@TAG@/siltop-@TAG@-macos-arm64.tar.gz"
-  # Brew would scan "64" out of "arm64" in the file name, so the version is explicit.
-  version "@VERSION@"
   sha256 "@SHA256@"
   license any_of: ["MIT", "Apache-2.0"]
 
@@ -26,6 +24,8 @@ class Siltop < Formula
 
   def install
     bin.install "siltop"
+    generate_completions_from_executable(bin/"siltop", "completions")
+    (man1/"siltop.1").write Utils.safe_popen_read(bin/"siltop", "man")
     doc.install "README.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.html"
     prefix.install "LICENSE-MIT", "LICENSE-APACHE"
   end
@@ -33,7 +33,7 @@ class Siltop < Formula
   def caveats
     <<~EOS
       siltop reads everything it shows without sudo. Its only network request is an
-      optional daily update check, off unless you turn it on during onboarding.
+      optional daily update check, off unless you turn it on (onboarding or settings).
       `siltop doctor` shows what this Mac exposes; `siltop --demo` plays a canned
       60 s session.
     EOS

@@ -196,7 +196,7 @@ mod tests {
             version: String::from("1.1.0"),
             chip: String::from("Apple M5 Pro"),
             macos: String::from("26A428"),
-            install: InstallKind::Curl,
+            install: InstallKind::Download,
             bug: false,
         };
         let url = facts.url();
@@ -209,7 +209,7 @@ mod tests {
         assert!(url.contains("version=1.1.0"));
         assert!(url.contains("chip=Apple%20M5%20Pro"));
         assert!(url.contains("macos=26A428"));
-        assert!(url.contains("install=curl"));
+        assert!(url.contains("install=download"));
         assert!(!url.contains("serial"));
         assert!(!url.contains("config"));
     }

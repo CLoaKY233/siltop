@@ -4,6 +4,22 @@ All notable changes to siltop. Format: [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-16
+
+### Fixed
+- `siltop update` no longer replaces a copy installed by `cargo install`; it prints the `cargo install --tag` line instead.
+- A release download unpacked into any writable `bin` directory, `/usr/local/bin` included, can now update itself. Before, only copies under your home folder could.
+- `SILTOP_NO_ONBOARDING` no longer turns off an update check you opted in to, and `SILTOP_NO_UPDATE_CHECK=0` no longer counts as set.
+- An update found by the daily check is offered again on later launches until you install or skip it, instead of disappearing for a day.
+- "Always update" in the update dialog now installs the offered version right away.
+- Update errors are one line, a GitHub rate limit says so, and the manual `siltop update` waits up to 20 s instead of 3 s on a slow link.
+- `updates.toml` is valid TOML.
+- `--help` shows that bare `siltop update` works.
+
+### Changed
+- The Homebrew formula installs shell completions and the man page, and passes `brew audit --strict`.
+- The README's install lines are pinned to the release, with a curl one-liner whose download is not quarantined.
+
 ## [1.2.0] - 2026-10-16
 
 First public release, under MIT OR Apache-2.0. siltop grew up as a private project
@@ -41,3 +57,7 @@ squashed.
 
 ### Cost
 - About 1.3% of one core at a 1 s interval (btop: 2.5%, macmon: 1.4%, same machine); it only draws when something changed, and pausing stops sampling entirely. Method and numbers: [docs/research/12-self-cost.md](docs/research/12-self-cost.md).
+
+[Unreleased]: https://github.com/CLoaKY233/siltop/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/CLoaKY233/siltop/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/CLoaKY233/siltop/releases/tag/v1.2.0

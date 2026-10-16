@@ -42,10 +42,18 @@ impl Launch {
         }
     }
 
-    /// Headless, scripted and non-interactive launches never ask.
+    /// Headless, scripted and non-interactive launches never ask, and
+    /// `SILTOP_NO_ONBOARDING` skips the screens.
     #[must_use]
     pub fn suppressed(self) -> bool {
-        if !self.tty || self.ci || self.disabled || self.demo {
+        self.disabled || self.non_interactive()
+    }
+
+    /// No one is watching: no terminal, CI, the demo, or a scripted mode.
+    /// The opt-in update check honours this but not `SILTOP_NO_ONBOARDING`.
+    #[must_use]
+    pub fn non_interactive(self) -> bool {
+        if !self.tty || self.ci || self.demo {
             return true;
         }
         matches!(

@@ -452,14 +452,26 @@ siltop feedback --bug --copy  # open a prefilled GitHub issue; doctor output on 
 siltop reset --yes            # delete config, state and history
 ```
 
-A Homebrew install is never replaced in place: `update` tells you to run `brew upgrade siltop`.
-A download is verified against its SHA-256 before it replaces the binary, and the previous
-copy is kept as `siltop.old`.
+Who can update itself depends on how siltop was installed:
+
+- **A release download** in a `bin` directory you can write (`~/.local/bin`, `~/bin`,
+  `/usr/local/bin`, ...) replaces itself. The archive is verified against its SHA-256, the
+  new binary must report the expected version before it is swapped in, and the previous copy
+  is kept as `siltop.old` for `--rollback`.
+- **Homebrew** is never replaced in place: `update` tells you to run `brew upgrade siltop`.
+- **`cargo install`** (`~/.cargo/bin`) is left to cargo: `update` prints the `cargo install`
+  line for the new tag.
+- **A local build** anywhere else, such as `target/release`, is never touched.
+
+The opt-in daily check (onboarding, or settings → privacy) runs only in the dashboard, at
+most once a day, and offers a found update again on later launches until you install or skip
+it. `SILTOP_NO_UPDATE_CHECK=1` turns it off regardless of the setting.
 
 ## Uninstalling
 
-`brew uninstall siltop`, or delete the binary you installed. Run `siltop reset`
-first if you also want the config, state and history gone.
+`brew uninstall siltop`, or delete the binary you installed (and `siltop.old` beside it, if
+`siltop update` left one). Run `siltop reset` first if you also want the config, state and
+history gone, and `siltop agent uninstall` if you installed the background agent.
 
 ## Privacy
 
