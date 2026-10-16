@@ -185,11 +185,16 @@ impl Flow {
     }
 
     /// A left click: a choice is focused and taken, as Enter would.
-    fn click(&mut self, area: Rect, col: u16, row: u16) -> Option<End> {
+    fn click(&mut self, area: Rect, keys: &str, col: u16, row: u16) -> Option<End> {
         if !fits(area) {
             return None;
         }
-        let at = onboard_hit(area, self.screen, col, row)?;
+        let view = OnboardView {
+            screen: self.screen,
+            focus: self.focus,
+            keys,
+        };
+        let at = onboard_hit(area, &view, col, row)?;
         self.focus = at;
         self.choose()
     }
@@ -250,7 +255,7 @@ pub fn run(config_path: Option<&Path>, force: bool, demo: bool) -> io::Result<En
             let end = match event::read()? {
                 Event::Key(key) => flow.key(key),
                 Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                    flow.click(area, mouse.column, mouse.row)
+                    flow.click(area, &keys, mouse.column, mouse.row)
                 }
                 _ => None,
             };
@@ -446,10 +451,17 @@ mod tests {
             for at in 0..screen.choices().len() {
                 let (col, row) = (0..area.height)
                     .flat_map(|row| (0..area.width).map(move |col| (col, row)))
-                    .find(|&(col, row)| onboard_hit(area, screen, col, row) == Some(at))
+                    .find(|&(col, row)| {
+                        let view = OnboardView {
+                            screen,
+                            focus: 0,
+                            keys: "m menu",
+                        };
+                        onboard_hit(area, &view, col, row) == Some(at)
+                    })
                     .unwrap_or_else(|| panic!("{screen:?} choice {at} is not clickable"));
                 let mut flow = Flow::new(screen);
-                let end = flow.click(area, col, row);
+                let end = flow.click(area, "m menu", col, row);
                 if screen == OnboardScreen::Updates {
                     assert_eq!(end, Some(End::Finished));
                     assert_eq!(flow.check, at == 0);
@@ -457,7 +469,7 @@ mod tests {
                     assert_eq!(flow.screen, next(screen), "{screen:?}");
                 }
                 let mut tiny = Flow::new(screen);
-                assert_eq!(tiny.click(Rect::new(0, 0, 20, 5), 3, 2), None);
+                assert_eq!(tiny.click(Rect::new(0, 0, 20, 5), "", 3, 2), None);
                 assert_eq!(tiny.screen, screen);
             }
         }

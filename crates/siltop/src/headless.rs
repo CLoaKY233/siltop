@@ -599,6 +599,14 @@ pub fn diagnose_text(snap: &Snapshot, verdict: &Verdict) -> String {
     text
 }
 
+/// `snap` without the process `pid`: `--diagnose` judges the Mac it was
+/// run on, and its own sampling is never the answer to "why is this slow"
+/// (it read "top siltop at 0.0 cores" on an idle Mac).
+fn without_pid(mut snap: Snapshot, pid: u32) -> Snapshot {
+    snap.processes.retain(|p| p.pid != pid);
+    snap
+}
+
 /// `--diagnose`: prime, wait one interval, judge, print.
 pub fn run_diagnose<T, W, S>(tick: &mut T, wait: &mut S, out: &mut W, cli: &Cli) -> Result<()>
 where
@@ -610,7 +618,7 @@ where
     let interval = cli.headless_interval();
     wait(interval);
     let snap = tick()?;
-    let snap = settle(tick, wait, snap, interval)?;
+    let snap = without_pid(settle(tick, wait, snap, interval)?, std::process::id());
     let mut engine = VerdictEngine::default();
     let verdict = engine.update(&snap, Instant::now(), None).clone();
     let text = diagnose_text(&snap, &verdict);
@@ -1244,6 +1252,25 @@ pub(crate) mod tests {
         assert!(text.contains("checked:"));
         assert!(text.contains("pressure nominal"));
         assert!(!text.contains('\x1b'));
+    }
+
+    /// Regression: on an idle Mac `--diagnose` named itself, "top siltop
+    /// at 0.0 cores". Its own pid never ranks.
+    #[test]
+    fn diagnose_never_names_itself() {
+        let me = std::process::id();
+        let mut tick = || {
+            let mut snap = fixture();
+            snap.processes[0].pid = me;
+            snap.processes[0].name = String::from("siltop");
+            snap.processes[0].cpu = Some(900.0);
+            Ok(snap)
+        };
+        let mut out = Vec::new();
+        run_diagnose(&mut tick, &mut |_| {}, &mut out, &Cli::default()).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("siltop"), "{text}");
+        assert!(!text.contains(&format!("pid {me}")), "{text}");
     }
 
     #[test]

@@ -36,8 +36,11 @@ impl Theme {
     /// The name that follows the terminal instead of naming a palette.
     pub const AUTO: &'static str = "auto";
 
-    /// Every theme choice in menu order: [`Theme::AUTO`] first, then each
-    /// built-in, so cycling with `T` comes back round to auto.
+    /// The core theme choices in menu order: [`Theme::AUTO`] first, then
+    /// each core built-in, so cycling with `T` comes back round to auto.
+    /// Not every name [`Theme::by_name`] accepts: an error or a list of
+    /// choices wants [`Theme::catalog`], which adds the pack and the
+    /// user's own themes.
     #[must_use]
     pub fn names() -> [&'static str; 11] {
         let mut names = [Self::AUTO; 11];

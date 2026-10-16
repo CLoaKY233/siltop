@@ -46,13 +46,14 @@ def unescape(text):
     )
 
 
-def child_env(xdg=None):
+def child_env(xdg=None, onboarding=True):
     env = dict(os.environ)
     env["TERM"] = "xterm-256color"
     env["COLORTERM"] = "truecolor"
     env.pop("NO_COLOR", None)
-    # A fresh config would otherwise park siltop on the first-run screens.
-    env.setdefault("SILTOP_NO_ONBOARDING", "1")
+    if not onboarding:
+        # A fresh config would otherwise park siltop on the first-run screens.
+        env.setdefault("SILTOP_NO_ONBOARDING", "1")
     if "UTF-8" not in env.get("LANG", "").upper().replace("UTF8", "UTF-8"):
         env["LANG"] = "en_US.UTF-8"
     if xdg is not None:
@@ -103,13 +104,24 @@ def stop(pid, fd, pump, quit_keys=b"q", grace=1.0):
     if status is None:
         try:
             os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        except (ProcessLookupError, ChildProcessError):
+        except ProcessLookupError:
             pass
+    # Close the master first: a dying child blocked writing to a full pty
+    # only finishes once its reader is gone. Then reap with a bounded wait.
     try:
         os.close(fd)
     except OSError:
         pass
+    if status is None:
+        deadline = time.monotonic() + 2.0
+        try:
+            while time.monotonic() < deadline:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    break
+                time.sleep(0.01)
+        except ChildProcessError:
+            pass
     return status
 
 

@@ -17,6 +17,7 @@ use crate::braille::{Grow, render_dots};
 use crate::chrome::{cell_titled, paint_rows, push_token};
 use crate::theme::{Ramp, Theme};
 use crate::widgets::power::MIN_WATTS;
+use crate::widgets::processes::fit;
 use unicode_width::UnicodeWidthStr;
 
 /// Processes listed per blame list.
@@ -494,11 +495,21 @@ fn render_axis(frame: &mut Frame, p: &Parts, view: &TimelineView, theme: &Theme)
 /// A blame list: its title, rows, and how its values print.
 type BlameList<'a> = (&'static str, &'a [Named], fn(f32) -> String);
 
-fn proc_line(p: &Named, value: &str, theme: &Theme) -> Line<'static> {
-    let mut spans = vec![TextSpan::styled(format!("  {value:>6} "), theme.fg())];
-    push_token(&mut spans, p.name.clone(), theme.dim());
-    if p.count > 1 {
-        push_token(&mut spans, format!("×{}", p.count), theme.muted());
+/// One blame row in `width` cells: the value, the name cut with `…` so the
+/// `×N` count always shows whole.
+fn proc_line(p: &Named, value: &str, width: u16, theme: &Theme) -> Line<'static> {
+    let lead = format!("  {value:>6} ");
+    let count = (p.count > 1).then(|| format!("×{}", p.count));
+    let tail = count.as_ref().map_or(0, |c| c.width() + 2);
+    let room = usize::from(width).saturating_sub(lead.width() + tail);
+    let mut spans = vec![TextSpan::styled(lead, theme.fg())];
+    push_token(
+        &mut spans,
+        fit(&p.name, u16::try_from(room).unwrap_or(u16::MAX)),
+        theme.dim(),
+    );
+    if let Some(count) = count {
+        push_token(&mut spans, count, theme.muted());
     }
     Line::from(spans)
 }
@@ -515,7 +526,7 @@ fn render_card(frame: &mut Frame, area: Rect, view: &TimelineView, theme: &Theme
     }
     for event in &blame.events {
         lines.push(Line::styled(
-            format!("• {}", event.label()),
+            fit(&format!("• {}", event.label()), inner.width),
             theme.warn_style(),
         ));
     }
@@ -529,7 +540,10 @@ fn render_card(frame: &mut Frame, area: Rect, view: &TimelineView, theme: &Theme
             continue;
         }
         lines.push(Line::styled(title, theme.muted()));
-        lines.extend(list.iter().map(|p| proc_line(p, &fmt(p.value), theme)));
+        lines.extend(
+            list.iter()
+                .map(|p| proc_line(p, &fmt(p.value), inner.width, theme)),
+        );
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -727,6 +741,32 @@ mod tests {
         assert!(text.contains("blame"), "{text}");
         assert!(text.contains("cargo"), "{text}");
         assert!(text.contains("180%"), "{text}");
+    }
+
+    /// Regression: blame names were cut mid-word (`Brave Browser He  ×2`)
+    /// and a narrow card cut the count itself (`Helper  ×`).
+    #[test]
+    fn blame_rows_ellipsize_the_name_and_keep_the_count() {
+        let p = Named {
+            name: String::from("Brave Browser Helper (Renderer)"),
+            value: 12.0,
+            count: 12,
+        };
+        let joined = |line: Line<'_>| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        let theme = Theme::default();
+        let line = joined(proc_line(&p, "12%", 30, &theme));
+        assert!(line.width() <= 30, "{line}");
+        assert!(line.ends_with("…  ×12"), "{line}");
+        let wide = joined(proc_line(&p, "12%", 80, &theme));
+        assert!(
+            wide.contains("Brave Browser Helper (Renderer)  ×12"),
+            "{wide}"
+        );
     }
 
     /// Regression (UI-DESIGN §2): a Mac with no GPU reading gets no gpu box.

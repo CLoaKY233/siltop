@@ -405,7 +405,10 @@ mod tests {
         }
         assert_eq!(
             cli::parse(["completions"]),
-            Err(cli::CliError::MissingValue("completions"))
+            Err(cli::CliError::NeedsFlag(
+                "completions",
+                "a shell: zsh, bash or fish"
+            ))
         );
         let err = cli::parse(["completions", "powershell"]).unwrap_err();
         assert_eq!(

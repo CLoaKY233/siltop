@@ -207,27 +207,26 @@ impl Default for Config {
 
 impl Config {
     /// Next slower interval, wrapping from the slowest back to the fastest.
+    /// An interval between presets (`-i 750ms`) moves to the next slower one.
     #[must_use]
     pub fn cycle_interval(&self) -> Duration {
-        let at = INTERVALS.iter().position(|i| *i == self.interval);
-        at.and_then(|i| INTERVALS.get(i + 1))
+        INTERVALS
+            .iter()
+            .find(|i| **i > self.interval)
             .copied()
             .unwrap_or(INTERVAL_FAST)
     }
 
-    /// One step along `INTERVALS`, clamped at both ends.
+    /// One step along `INTERVALS`, clamped at both ends. An interval between
+    /// presets (`-i 750ms`) moves to the nearest preset in that direction.
     #[must_use]
     pub fn step_interval(&self, faster: bool) -> Duration {
-        let at = INTERVALS
-            .iter()
-            .position(|i| *i == self.interval)
-            .unwrap_or(1);
         let next = if faster {
-            at.saturating_sub(1)
+            INTERVALS.iter().rev().find(|i| **i < self.interval)
         } else {
-            (at + 1).min(INTERVALS.len() - 1)
+            INTERVALS.iter().find(|i| **i > self.interval)
         };
-        INTERVALS.get(next).copied().unwrap_or(INTERVAL_DEFAULT)
+        next.copied().unwrap_or(self.interval)
     }
 
     #[must_use]
@@ -302,6 +301,23 @@ mod tests {
         let slowest = cfg.with_interval(Duration::from_secs(5));
         assert_eq!(slowest.step_interval(false), Duration::from_secs(5));
         assert_eq!(slowest.step_interval(true), Duration::from_secs(2));
+    }
+
+    /// Regression: `-i 750ms` stepped as if it were 500 ms (the second
+    /// preset), so `[` jumped to 250 ms.
+    #[test]
+    fn off_preset_interval_steps_to_the_nearest_preset_that_way() {
+        let cfg = Config::default().with_interval(Duration::from_millis(750));
+        assert_eq!(cfg.step_interval(true), INTERVAL_MID);
+        assert_eq!(cfg.step_interval(false), INTERVAL_SLOW);
+        assert_eq!(cfg.cycle_interval(), INTERVAL_SLOW);
+        let slow = cfg.clone().with_interval(Duration::from_secs(10));
+        assert_eq!(
+            slow.step_interval(false),
+            Duration::from_secs(10),
+            "clamped"
+        );
+        assert_eq!(slow.step_interval(true), Duration::from_secs(5));
     }
 
     #[test]

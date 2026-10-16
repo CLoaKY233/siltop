@@ -14,12 +14,25 @@ pub fn default_dir() -> Option<PathBuf> {
     crate::config_io::default_path().map(|config| config.with_file_name("themes"))
 }
 
+/// A file error in the CLI's plain words: `no such file: X`, `X is a
+/// folder`, else `X: <reason>` without the `(os error N)` tail.
+fn file_error(path: &Path, error: &std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => format!("no such file: {}", path.display()),
+        std::io::ErrorKind::IsADirectory => format!("{} is a folder", path.display()),
+        _ => format!("{}: {}", path.display(), crate::io_reason(error)),
+    }
+}
+
 fn read_capped(path: &Path) -> Result<String, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = std::fs::metadata(path).map_err(|e| file_error(path, &e))?;
+    if meta.is_dir() {
+        return Err(format!("{} is a folder", path.display()));
+    }
     if meta.len() > MAX_BYTES {
         return Err(format!("{}: too large for a theme file", path.display()));
     }
-    std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::read_to_string(path).map_err(|e| file_error(path, &e))
 }
 
 fn stem(path: &Path) -> String {
@@ -77,17 +90,31 @@ fn unshadowed(name: String) -> String {
 pub fn import(source: &Path, dir: &Path) -> Result<PathBuf, String> {
     let text = read_capped(source)?;
     let btop = BtopTheme::parse(&text);
+    // A colour btop's format cannot hold is named with its line, rather
+    // than the file being called "not a theme" for it.
+    let bad_colour = || {
+        BtopTheme::bad_colour(&text).map(|(line, key, value)| {
+            format!(
+                "{} line {line}: theme[{key}] has a bad colour {value:?}; expected #rrggbb",
+                source.display()
+            )
+        })
+    };
     if btop.is_empty() {
-        return Err(format!(
-            "{}: no theme[...] lines; is this a btop .theme file?",
-            source.display()
-        ));
+        return Err(bad_colour().unwrap_or_else(|| {
+            format!(
+                "{}: no theme[...] lines; is this a btop .theme file?",
+                source.display()
+            )
+        }));
     }
     let name = stem(source).to_ascii_lowercase().replace([' ', '_'], "-");
     if name.is_empty() {
         return Err(String::from("the theme file needs a name"));
     }
-    let theme = btop.to_theme(&unshadowed(name))?;
+    let theme = btop
+        .to_theme(&unshadowed(name))
+        .map_err(|why| bad_colour().unwrap_or(why))?;
     let dest = dir.join(format!("{}.toml", theme.name));
     crate::config_io::atomic_write(&dest, &theme.to_toml(btop.background()))
         .map_err(|e| format!("{}: {e}", dest.display()))?;
@@ -171,6 +198,46 @@ mod tests {
         std::fs::write(&source, "hello = world\n").unwrap();
         let why = import(&source, &root.join("themes")).unwrap_err();
         assert!(why.contains("btop"), "{why}");
+    }
+
+    /// Regression: a file whose only line held a bad colour was called
+    /// "no theme[...] lines" although it had one.
+    #[test]
+    fn import_names_a_bad_colour_and_its_line() {
+        let root = tempdir("badcolour");
+        let source = root.join("broken.theme");
+        std::fs::write(&source, "# a btop theme\ntheme[main_bg]=\"#zzzzzz\"\n").unwrap();
+        let why = import(&source, &root.join("themes")).unwrap_err();
+        assert_eq!(
+            why,
+            format!(
+                "{} line 2: theme[main_bg] has a bad colour \"#zzzzzz\"; expected #rrggbb",
+                source.display()
+            )
+        );
+        // Good lines but a bad main_fg: the bad line, not "no main_fg".
+        std::fs::write(
+            &source,
+            "theme[cpu_start]=\"#50f095\"\ntheme[main_fg]=\"#1234\"\n",
+        )
+        .unwrap();
+        let why = import(&source, &root.join("themes")).unwrap_err();
+        assert!(why.contains("line 2: theme[main_fg]"), "{why}");
+    }
+
+    /// Regression: a missing file or a folder printed raw OS errors.
+    #[test]
+    fn import_of_a_missing_file_or_a_folder_is_one_plain_line() {
+        let root = tempdir("missing");
+        let missing = root.join("nope.theme");
+        assert_eq!(
+            import(&missing, &root.join("themes")).unwrap_err(),
+            format!("no such file: {}", missing.display())
+        );
+        assert_eq!(
+            import(&root, &root.join("themes")).unwrap_err(),
+            format!("{} is a folder", root.display())
+        );
     }
 
     #[test]

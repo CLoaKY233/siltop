@@ -51,6 +51,10 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const WHEEL_ROWS: i32 = 3;
 /// Why a process key does nothing on a view without the table.
 const NO_LIST: &str = "no process list on this view";
+/// The toast while a manual update check runs.
+const UPDATE_CHECKING: &str = "checking for updates…";
+/// How the toast after Enter on a filter starts; cleared with the filter.
+const FILTER_KEPT: &str = "filter kept";
 
 /// The open signal picker: whom it targets and which row is under the
 /// cursor. Rows are dimmed up front when the kernel would refuse.
@@ -64,6 +68,22 @@ struct SignalMenu {
     rows: Vec<SignalRow>,
     selected: usize,
     note: Option<String>,
+}
+
+/// `path` with the home directory spelled `~`, as a shell would: shorter
+/// on a narrow settings page, and no user name on a screenshot.
+fn tilde(path: &str, home: Option<&str>) -> String {
+    let Some(home) = home
+        .map(|h| h.trim_end_matches('/'))
+        .filter(|h| !h.is_empty())
+    else {
+        return path.to_owned();
+    };
+    match path.strip_prefix(home) {
+        Some("") => String::from("~"),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_owned(),
+    }
 }
 
 /// The session shows this Mac, now: neither the demo's canned load nor a
@@ -165,6 +185,7 @@ pub fn run(cli: &crate::cli::Cli) -> Result<()> {
     let (tx, rx) = channel();
     let shutdown = signals::install(tx.clone())?;
     signals::install_job_control(tx.clone())?;
+    let replay_is_none = replay.is_none();
     let (source, replay_warning) = if let Some((trace, warning)) = replay {
         let player = crate::replay::Player::new(trace, Instant::now());
         (SnapshotSource::Replay(Box::new(player)), warning)
@@ -180,6 +201,12 @@ pub fn run(cli: &crate::cli::Cli) -> Result<()> {
         (SnapshotSource::Live(worker), None)
     };
     let mut app = App::with_source(config, source);
+    if cli.demo && replay_is_none {
+        // The canned session's recent past, so the first frame already
+        // shows full graphs rather than two empty minutes.
+        let step = app.cadence();
+        app.backfill_history(&crate::demo::backfill(siltop_core::HISTORY_WINDOW, step));
+    }
     // Neither the demo nor a replayed trace lands in this Mac's own history.
     let live = this_mac_now(cli.demo, &app.source);
     let (recorder, history_warning) = if live {
@@ -190,11 +217,14 @@ pub fn run(cli: &crate::cli::Cli) -> Result<()> {
     app.recorder = recorder;
     app.blank_first_cpu = live;
     app.demo = cli.demo;
+    app.mouse = !cli.no_mouse;
     app.watch = live.then(|| crate::sinks::Watch::new(&app.config.alerts, true));
     app.overrides = overrides;
-    app.config_path = shown_path;
+    let home = std::env::var("HOME").ok();
+    app.config_path = shown_path.map(|p| tilde(&p, home.as_deref()));
     app.about = crate::cli::build_facts();
-    app.about.push(crate::state_row());
+    let (key, state) = crate::state_row();
+    app.about.push((key, tilde(&state, home.as_deref())));
     app.first_run = first_run;
     app.first_run.use_profile(app.profile);
     app.update_tx = Some(tx.clone());
@@ -427,12 +457,17 @@ struct App {
     stopped: bool,
     /// `--demo`: the rows are canned, so their pids name nothing here.
     demo: bool,
+    /// Cleared by `--no-mouse`: then a mouse report that still arrives (a
+    /// terminal left in reporting mode, a stray sequence) is ignored.
+    mouse: bool,
     /// Footer badge once a newer version is known.
     update_badge: Option<String>,
     update_offer: Option<PendingUpdate>,
     update_dialog: bool,
     update_focus: usize,
     update_tx: Option<std::sync::mpsc::Sender<crate::msg::AppMsg>>,
+    /// A manual update check is on its way back.
+    update_checking: bool,
     /// Ctrl-Z or SIGTSTP: the loop gives the terminal back and stops.
     suspend: bool,
     /// Back from a stop: the loop repaints the whole screen.
@@ -500,6 +535,7 @@ impl App {
             low_power: false,
             stopped: false,
             demo: false,
+            mouse: true,
             paused_at: None,
             dirty_prefs: false,
             pending_signal: Signal::Term,
@@ -516,6 +552,7 @@ impl App {
             update_dialog: false,
             update_focus: 0,
             update_tx: None,
+            update_checking: false,
             suspend: false,
             repaint: false,
             proc_sweeps: 0,
@@ -526,6 +563,7 @@ impl App {
     fn update(&mut self, msg: AppMsg, now: Instant) {
         self.now = now;
         match msg {
+            AppMsg::Input(ratatui::crossterm::event::Event::Mouse(_)) if !self.mouse => {}
             AppMsg::Input(ev) => {
                 if matches!(ev, ratatui::crossterm::event::Event::Key(_))
                     && self.first_run.dismiss()
@@ -605,18 +643,15 @@ impl App {
                 self.pacer.mark();
             }
             AppMsg::UpdateInstalled { version } => {
-                self.update_badge = None;
-                self.update_offer = None;
-                self.update_dialog = false;
-                self.set_toast(
-                    format!("Updated to {version}, restart to use it"),
-                    ToastKind::Info,
-                    STATUS_TTL,
-                );
+                self.update_installed(&version);
                 self.pacer.mark();
             }
             AppMsg::UpdateFailed { message } => {
                 self.set_toast(message, ToastKind::Error, STATUS_TTL);
+                self.pacer.mark();
+            }
+            AppMsg::UpdateChecked(found) => {
+                self.update_checked(found);
                 self.pacer.mark();
             }
         }
@@ -845,6 +880,22 @@ impl App {
         self.tick_timeline(now);
     }
 
+    /// Pushes `frames` (oldest first, one per cadence) into the graphs as
+    /// the past just before now: the session's epoch moves back to make
+    /// room, so live samples carry on from the last of them.
+    fn backfill_history(&mut self, frames: &[Snapshot]) {
+        let step = self.cadence();
+        let span = step.saturating_mul(u32::try_from(frames.len()).unwrap_or(u32::MAX));
+        let Some(epoch) = self.epoch.checked_sub(span) else {
+            return;
+        };
+        self.epoch = epoch;
+        for (i, snap) in (0_u32..).zip(frames) {
+            let at = self.sample_clock.stamp(step.saturating_mul(i), step);
+            self.histories.push_snapshot(snap, at);
+        }
+    }
+
     fn apply_snapshot(&mut self, mut snapshot: Snapshot) {
         self.record(&snapshot);
         if snapshot.cpu.temp_c.is_none() {
@@ -1002,7 +1053,7 @@ impl App {
             Action::Drag { .. } => {}
             Action::MouseUp => self.dragging_split = false,
             Action::Help => self.toggle_help(),
-            Action::CheckUpdate => self.open_update_dialog(),
+            Action::CheckUpdate => self.check_for_update(),
             Action::Cancel => self.cancel_overlay(),
             Action::Close => self.close_overlay(),
             Action::ReplayScrub(_) | Action::ReplaySpeed(_) => self.replay_control(action),
@@ -1142,6 +1193,99 @@ impl App {
         self.proc.select(index, self.table_rows());
     }
 
+    /// `U` and the menu's "Check for updates": with a release already
+    /// waiting, its dialog; else a real check against GitHub in the
+    /// background (explicit, so `SILTOP_NO_UPDATE_CHECK` does not apply).
+    /// Never from the demo or a replay, whose Mac is not this one.
+    fn check_for_update(&mut self) {
+        if self.update_offer.is_some() {
+            self.open_update_dialog();
+            return;
+        }
+        let refusal = match self.recorded() {
+            Some("demo") => Some("not in the demo"),
+            Some(_) => Some("not in a replay"),
+            None if self.update_checking => Some(UPDATE_CHECKING),
+            None => None,
+        };
+        if let Some(why) = refusal {
+            self.set_toast(String::from(why), ToastKind::Info, STATUS_TTL);
+            return;
+        }
+        self.set_toast(String::from(UPDATE_CHECKING), ToastKind::Info, STATUS_TTL);
+        let Some(tx) = self.update_tx.clone() else {
+            return;
+        };
+        self.update_checking = true;
+        std::thread::spawn(move || {
+            let found = match crate::update::fetch(&crate::update::endpoint()) {
+                Ok(manifest) if crate::update::is_newer(crate::cli::VERSION, &manifest.version) => {
+                    let brew = std::env::current_exe().is_ok_and(|exe| {
+                        crate::update::install_kind(&exe) == crate::update::InstallKind::Brew
+                    });
+                    crate::msg::ManualCheck::Newer {
+                        version: manifest.version,
+                        url: manifest.url,
+                        sha256: manifest.sha256,
+                        notes: manifest.notes,
+                        brew,
+                    }
+                }
+                Ok(_) => crate::msg::ManualCheck::Current,
+                Err(crate::update::FetchError::Offline(_)) => crate::msg::ManualCheck::Unreachable,
+                Err(err) => crate::msg::ManualCheck::Failed(err.to_string()),
+            };
+            let _ = tx.send(crate::msg::AppMsg::UpdateChecked(found));
+        });
+    }
+
+    fn update_installed(&mut self, version: &str) {
+        self.update_badge = None;
+        self.update_offer = None;
+        self.update_dialog = false;
+        self.set_toast(
+            format!("Updated to {version}, restart to use it"),
+            ToastKind::Info,
+            STATUS_TTL,
+        );
+    }
+
+    /// A manual check came back: say what it found, in the footer.
+    fn update_checked(&mut self, found: crate::msg::ManualCheck) {
+        use crate::msg::ManualCheck;
+        self.update_checking = false;
+        let (message, kind) = match found {
+            ManualCheck::Newer {
+                version,
+                url,
+                sha256,
+                notes,
+                brew,
+            } => {
+                self.update_badge = Some(format!("update {version} available"));
+                let message = format!(
+                    "siltop {version} is available — press {} to install",
+                    self.key_label(Action::CheckUpdate)
+                );
+                self.update_offer = Some(PendingUpdate {
+                    version,
+                    url,
+                    sha256,
+                    notes,
+                    brew,
+                });
+                (message, ToastKind::Info)
+            }
+            ManualCheck::Current => (
+                format!("siltop is up to date ({})", crate::cli::VERSION),
+                ToastKind::Info,
+            ),
+            ManualCheck::Unreachable => (String::from("could not reach GitHub"), ToastKind::Warn),
+            ManualCheck::Failed(why) => (format!("update check failed: {why}"), ToastKind::Warn),
+        };
+        self.set_toast(message, kind, STATUS_TTL);
+    }
+
     fn open_update_dialog(&mut self) {
         if self.update_offer.is_none() {
             self.set_toast(
@@ -1266,14 +1410,12 @@ impl App {
                     self.searching = false;
                     self.focus = Focus::Processes;
                 } else {
-                    self.proc.filter.clear();
-                    self.proc.reset_top();
+                    self.clear_filter();
                 }
             }
             None if !self.proc.filter.is_empty() => {
-                self.proc.filter.clear();
+                self.clear_filter();
                 self.focus = Focus::Processes;
-                self.proc.reset_top();
             }
             None if !self.proc.tags.is_empty() => self.clear_tags(),
             None if self.expanded.is_some() => self.expanded = None,
@@ -1376,6 +1518,7 @@ impl App {
             Action::FilterBackspace => {
                 self.proc.filter.pop();
                 self.proc.reset_top();
+                self.forget_filter_toast();
             }
             Action::FilterClear => self.clear_filter(),
             Action::FilterDone => {
@@ -1386,7 +1529,7 @@ impl App {
                     let noun = if n == 1 { "match" } else { "matches" };
                     let esc = self.key_label(Action::Cancel);
                     self.set_toast(
-                        format!("filter kept · {n} {noun} · {esc} clears"),
+                        format!("{FILTER_KEPT} · {n} {noun} · {esc} clears"),
                         ToastKind::Info,
                         STATUS_TTL,
                     );
@@ -1465,6 +1608,20 @@ impl App {
         if !self.proc.filter.is_empty() {
             self.proc.filter.clear();
             self.proc.reset_top();
+        }
+        self.forget_filter_toast();
+    }
+
+    /// The "filter kept · N matches" toast describes a filter; once the
+    /// filter is gone it would describe rows that are no longer hidden.
+    fn forget_filter_toast(&mut self) {
+        if self.proc.filter.is_empty()
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|(message, _)| message.starts_with(FILTER_KEPT))
+        {
+            self.status = None;
         }
     }
 
@@ -1915,6 +2072,11 @@ impl App {
     }
 
     fn open_detail(&mut self) {
+        // A dossier over a list this view does not draw would be invisible.
+        if self.proc_pane().is_none() {
+            self.set_toast(String::from(NO_LIST), ToastKind::Warn, STATUS_TTL);
+            return;
+        }
         self.sync_model();
         if let Some(pid) = self.proc.selected_pid() {
             self.detail_pid = Some(pid);
@@ -2065,7 +2227,7 @@ impl App {
             Hit::Settings => self.open_settings(SettingsCategory::General),
             Hit::Themes => self.open_settings(SettingsCategory::Appearance),
             Hit::About => self.open_settings(SettingsCategory::About),
-            Hit::CheckUpdate => self.open_update_dialog(),
+            Hit::CheckUpdate => self.check_for_update(),
             Hit::Timeline => self.toggle_timeline(),
             Hit::Menu => self.toggle_menu(),
             Hit::Verdict => self.select_verdict(),
@@ -2452,6 +2614,10 @@ impl App {
     /// Queues an OSC 52 copy of the dossier's (or the selected row's) pid
     /// or command line.
     fn copy(&mut self, command: bool) {
+        if self.detail_pid.is_none() && self.proc_pane().is_none() {
+            self.set_toast(String::from(NO_LIST), ToastKind::Warn, STATUS_TTL);
+            return;
+        }
         let Some(proc) = self.action_process() else {
             self.set_toast(
                 String::from("no process selected"),
@@ -4270,6 +4436,168 @@ mod tests {
         app.send(Action::Move(-1));
         assert_eq!(app.detail_pid, app.proc.selected_pid());
         assert_eq!(app.detail_pid, Some(safe(22)));
+    }
+
+    #[test]
+    fn tilde_shortens_only_the_home_prefix() {
+        let home = Some("/Users/dev");
+        assert_eq!(
+            tilde("/Users/dev/.config/siltop/config.toml", home),
+            "~/.config/siltop/config.toml"
+        );
+        assert_eq!(tilde("/Users/dev", home), "~");
+        assert_eq!(tilde("/Users/developer/x", home), "/Users/developer/x");
+        assert_eq!(tilde("/tmp/x", home), "/tmp/x");
+        assert_eq!(tilde("/tmp/x", None), "/tmp/x");
+        assert_eq!(tilde("/Users/dev/x", Some("/Users/dev/")), "~/x");
+    }
+
+    /// Regression: `H` during `siltop replay` showed this Mac's history
+    /// beside the trace's frames. The timeline stays shut and says why.
+    #[test]
+    fn timeline_is_off_in_a_replay() {
+        let mut app = replaying(Instant::now());
+        app.reduce(Action::Timeline);
+        assert!(app.timeline.is_none());
+        assert_eq!(status_of(&app), timeline::REPLAY_NO_TIMELINE);
+        let mut live = work_app();
+        live.reduce(Action::Timeline);
+        assert!(live.timeline.is_some(), "a live session still opens it");
+    }
+
+    /// HN polish: `siltop --demo` opened on two minutes of empty graphs.
+    /// The canned past fills them, and live samples carry on after it.
+    #[test]
+    fn demo_backfill_fills_the_graphs_before_the_first_sample() {
+        use siltop_core::SeriesId;
+        let mut app = work_app();
+        let step = app.cadence();
+        let frames = crate::demo::backfill(Duration::from_mins(2), step);
+        app.backfill_history(&frames);
+        let cpu = app.histories.get(SeriesId::Cpu);
+        assert!(cpu.len() >= frames.len(), "{}", cpu.len());
+        let last = cpu.newest().unwrap();
+        assert!(Instant::now().saturating_duration_since(app.epoch) >= Duration::from_mins(2));
+        app.update(snap_msg(), Instant::now());
+        let after = app.histories.get(SeriesId::Cpu).newest().unwrap();
+        assert!(after > last, "the live sample lands after the backfill");
+    }
+
+    /// Regression: "Check for updates  U" only toasted "no update
+    /// waiting". It checks now, and never from the demo or a replay.
+    #[test]
+    fn check_for_updates_asks_and_reports_what_it_found() {
+        let mut demo = work_app();
+        demo.demo = true;
+        demo.send(Action::CheckUpdate);
+        assert_eq!(status_of(&demo), "not in the demo");
+        assert!(!demo.update_checking);
+        let t0 = Instant::now();
+        let mut replay = replaying(t0);
+        replay.reduce(Action::CheckUpdate);
+        assert_eq!(status_of(&replay), "not in a replay");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = work_app();
+        app.update_tx = Some(tx);
+        // No network in tests: the answer is delivered by hand below.
+        app.update_checking = true;
+        app.send(Action::CheckUpdate);
+        assert_eq!(status_of(&app), UPDATE_CHECKING, "one check at a time");
+        assert!(rx.try_recv().is_err(), "no second request");
+
+        let now = app.now;
+        app.update(AppMsg::UpdateChecked(crate::msg::ManualCheck::Current), now);
+        assert!(!app.update_checking);
+        assert_eq!(
+            status_of(&app),
+            format!("siltop is up to date ({})", crate::cli::VERSION)
+        );
+        app.update(
+            AppMsg::UpdateChecked(crate::msg::ManualCheck::Unreachable),
+            now,
+        );
+        assert_eq!(status_of(&app), "could not reach GitHub");
+        app.update(
+            AppMsg::UpdateChecked(crate::msg::ManualCheck::Newer {
+                version: String::from("9.9.9"),
+                url: String::new(),
+                sha256: String::new(),
+                notes: String::new(),
+                brew: false,
+            }),
+            now,
+        );
+        assert_eq!(
+            status_of(&app),
+            "siltop 9.9.9 is available — press U to install"
+        );
+        assert!(
+            !app.update_dialog,
+            "the toast says how; it does not interrupt"
+        );
+        app.send(Action::CheckUpdate);
+        assert!(app.update_dialog, "U now opens the install dialog");
+    }
+
+    /// Regression: with `--no-mouse` a synthetic click on `? help` still
+    /// opened help; mouse reports are ignored entirely when mouse is off.
+    #[test]
+    fn no_mouse_ignores_mouse_reports() {
+        for mouse in [true, false] {
+            let mut app = work_app();
+            app.mouse = mouse;
+            let screen = app.screen();
+            let footer = screen.last().unwrap();
+            let col = footer
+                .find("? help")
+                .map(|b| footer[..b].chars().count())
+                .unwrap();
+            let row = u16::try_from(screen.len() - 1).unwrap();
+            let col = u16::try_from(col).unwrap();
+            let now = app.now;
+            app.update(
+                mouse_msg(MouseEventKind::Down(MouseButton::Left), col, row),
+                now,
+            );
+            assert_eq!(app.help, mouse, "mouse={mouse}");
+        }
+    }
+
+    /// Regression: after `f sa ⇥` then Delete the rows came back but the
+    /// footer still read "filter kept · 2 matches · esc clears".
+    #[test]
+    fn clearing_the_filter_drops_the_filter_kept_toast() {
+        for clear in [Action::FilterClear, Action::Cancel, Action::FilterBackspace] {
+            let mut app = work_app();
+            app.send(Action::Search);
+            app.send(Action::FilterChar('1'));
+            app.send(Action::FilterDone);
+            assert!(status_of(&app).starts_with(FILTER_KEPT), "{clear:?}");
+            if clear == Action::FilterBackspace {
+                app.send(Action::Search);
+            }
+            app.send(clear);
+            assert!(app.proc.filter.is_empty(), "{clear:?}");
+            assert!(!status_of(&app).starts_with(FILTER_KEPT), "{clear:?}");
+        }
+    }
+
+    /// Regression: at 40x12 the list is hidden, yet Enter opened an
+    /// invisible dossier (the footer said `esc close`, `x` did nothing).
+    #[test]
+    fn open_on_a_view_without_the_list_says_why() {
+        for (cols, rows) in [(40, 12), (30, 8)] {
+            let mut app = app();
+            app.at(cols, rows);
+            app.set_processes(procs(5));
+            app.focus = Focus::Processes;
+            assert!(app.proc_pane().is_none(), "{cols}x{rows} hides the table");
+            app.send(Action::Open);
+            assert_eq!(app.detail_pid, None, "{cols}x{rows}");
+            assert_eq!(status_of(&app), NO_LIST);
+            assert!(!app.screen().join("\n").contains("esc close"));
+        }
     }
 
     /// `cargo test --release -p siltop -- --ignored --nocapture work_frame_cost`
@@ -6526,6 +6854,8 @@ mod tests {
                 Action::ForceKill,
                 Action::SignalMenu,
                 Action::Tag,
+                Action::CopyPid,
+                Action::CopyCommand,
             ] {
                 app.status = None;
                 app.reduce(action);

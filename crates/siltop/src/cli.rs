@@ -302,7 +302,7 @@ pub const FLAGS: &[FlagSpec] = &[
         "--diagnose",
         None,
         Section::Scripting,
-        "Print a one-line verdict with its evidence",
+        "Print the verdict and its evidence",
     ),
     flag(
         FlagId::PrintConfig,
@@ -528,14 +528,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "feedback",
         subs: &[],
         value: None,
-        args: "--bug | --copy",
+        args: "[--bug] [--copy]",
         help: "Open a GitHub issue; --bug for a bug report",
     },
     CommandSpec {
         name: "reset",
         subs: &[],
         value: None,
-        args: "--yes",
+        args: "[--yes]",
         help: "Delete config, state and history",
     },
     CommandSpec {
@@ -554,6 +554,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+/// Whether `word` asks for help: `-h` or `--help`.
+fn is_help(word: &str) -> bool {
+    word == "-h" || word == "--help"
+}
+
 const EXAMPLES: &[(&str, &str)] = &[
     ("siltop", "the dashboard"),
     ("siltop --surface glance -i 2s", "a quiet corner monitor"),
@@ -561,7 +566,10 @@ const EXAMPLES: &[(&str, &str)] = &[
         "siltop --json-stream -i 1s --count 60",
         "a minute of NDJSON for a script",
     ),
-    ("siltop --diagnose", "why is this Mac slow, in one line"),
+    (
+        "siltop --diagnose",
+        "why is this Mac slow, and the evidence",
+    ),
     (
         "siltop report week --json",
         "a week of energy by app and peak temperatures",
@@ -596,23 +604,31 @@ fn help_row(out: &mut String, head: &str, help: &str) {
     }
 }
 
+/// What follows a command in a synopsis: its sub-words as a choice, then
+/// its options (`[today | week | month] [--json]`). `--help` and the man
+/// page both print this, so they never disagree.
+#[must_use]
+pub fn synopsis_args(command: &CommandSpec) -> String {
+    let args = if command.subs.is_empty() {
+        command.args.to_owned()
+    } else {
+        let words: Vec<String> = command
+            .subs
+            .iter()
+            .map(|(word, arg, _)| format!("{word} {arg}").trim_end().to_owned())
+            .collect();
+        format!("[{}] {}", words.join(" | "), command.args)
+    };
+    args.trim_end().to_owned()
+}
+
 /// `--help`, generated from [`FLAGS`] and [`COMMANDS`].
 #[must_use]
 pub fn usage() -> String {
     use std::fmt::Write as _;
     let mut out = String::from("Usage: siltop [OPTIONS]\n");
     for command in COMMANDS {
-        let args = if command.subs.is_empty() {
-            command.args.to_owned()
-        } else {
-            let words: Vec<String> = command
-                .subs
-                .iter()
-                .map(|(word, arg, _)| format!("{word} {arg}").trim_end().to_owned())
-                .collect();
-            format!("[{}] {}", words.join(" | "), command.args)
-        };
-        let line = format!("siltop {} {args}", command.name);
+        let line = format!("siltop {} {}", command.name, synopsis_args(command));
         let _ = writeln!(out, "       {}", line.trim_end());
     }
     out.push_str("\nApple Silicon system monitor. No telemetry, no sudo.\n");
@@ -647,8 +663,46 @@ pub fn usage() -> String {
     for (code, what) in EXIT_CODES {
         help_row(&mut out, &code.to_string(), what);
     }
-    out.push_str("\nIn the dashboard, m opens the menu, ? lists every key and q quits.\n");
+    out.push_str("\nsiltop help <COMMAND>, or <COMMAND> --help, shows one command's options.\n");
+    out.push_str("In the dashboard, m opens the menu, ? lists every key and q quits.\n");
     out
+}
+
+/// `siltop <command> --help`: the command's synopsis and what it does,
+/// its sub-words, and the options that belong to it.
+#[must_use]
+pub fn command_usage(command: &CommandSpec) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!("Usage: siltop {} {}", command.name, synopsis_args(command))
+        .trim_end()
+        .to_owned();
+    let _ = write!(out, "\n\n{}.\n", command.help);
+    if !command.subs.is_empty() {
+        out.push_str("\nCommands:\n");
+        for (word, arg, help) in command.subs {
+            help_row(&mut out, &format!("{} {word} {arg}", command.name), help);
+        }
+    }
+    out.push_str("\nOptions:\n");
+    let owns = |owner: &Owner| owner.command == command.name || owner.also.contains(&command.name);
+    for spec in FLAGS
+        .iter()
+        .filter(|spec| spec.owner.as_ref().is_some_and(owns))
+    {
+        help_row(&mut out, &spec.synopsis(), spec.help);
+    }
+    help_row(&mut out, "-h, --help", "Print this help");
+    out.push_str("\nGlobal options such as --config and --demo: siltop --help\n");
+    out
+}
+
+/// `--help` for the whole program, or for one command.
+#[must_use]
+pub fn help_text(command: Option<&str>) -> String {
+    COMMANDS
+        .iter()
+        .find(|spec| Some(spec.name) == command)
+        .map_or_else(usage, command_usage)
 }
 
 /// A shell `siltop completions` writes a script for.
@@ -818,6 +872,9 @@ pub struct Cli {
     pub feedback_copy: bool,
     /// `reset --yes`: skip the typed confirmation.
     pub reset_yes: bool,
+    /// With [`Mode::Help`]: `siltop <command> --help` or `siltop help
+    /// <command>` names the command whose help to print.
+    pub help_command: Option<&'static str>,
 }
 
 impl Default for Cli {
@@ -849,6 +906,7 @@ impl Default for Cli {
             feedback_bug: false,
             feedback_copy: false,
             reset_yes: false,
+            help_command: None,
         }
     }
 }
@@ -930,7 +988,8 @@ pub enum CliError {
     Conflict(&'static str, &'static str),
     /// `doctor --json`: a command with no JSON form.
     NoJson(&'static str),
-    /// `export` without `--csv`: a command missing a flag it requires.
+    /// `export` without `--csv`, `fleet` without a host: a command or
+    /// flag missing something it requires.
     NeedsFlag(&'static str, &'static str),
     /// `report --json week`: a sub-word after an option instead of right
     /// after its command.
@@ -999,7 +1058,28 @@ fn parse_theme(name: &str) -> Result<Option<String>, String> {
     }
     Theme::by_name(trimmed)
         .map(|theme| Some(String::from(theme.name)))
-        .ok_or_else(|| format!("unknown theme; try {}", Theme::names().join(", ")))
+        .ok_or_else(|| format!("unknown theme; try {}", Theme::catalog().join(", ")))
+}
+
+/// `HOST:PORT`: an address as it is, else a name resolved by the system
+/// (`localhost:9199`), preferring a loopback address so a name for this
+/// Mac never opens the port to the network by accident.
+fn parse_addr(text: &str) -> Option<SocketAddr> {
+    use std::net::ToSocketAddrs as _;
+    let text = text.trim();
+    if let Ok(addr) = text.parse() {
+        return Some(addr);
+    }
+    // A bare name has no port: ask nothing of the resolver.
+    text.rsplit_once(':')
+        .filter(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())?;
+    let addrs: Vec<SocketAddr> = text.to_socket_addrs().ok()?.collect();
+    addrs
+        .iter()
+        .find(|addr| addr.ip().is_loopback() && addr.is_ipv4())
+        .or_else(|| addrs.iter().find(|addr| addr.ip().is_loopback()))
+        .or_else(|| addrs.first())
+        .copied()
 }
 
 fn parse_surface(name: &str) -> Result<Surface, String> {
@@ -1061,13 +1141,13 @@ fn unknown_word(cli: &Cli, word: String) -> CliError {
 fn check_combinations(cli: &Cli, seen: &Seen) -> Result<(), CliError> {
     // Checked last: hosts may follow flags (`fleet --demo a b`).
     if cli.mode == Mode::Fleet && cli.hosts.is_empty() {
-        return Err(CliError::MissingValue("fleet"));
+        return Err(CliError::NeedsFlag("fleet", "at least one host"));
     }
     if cli.count.is_some() && cli.mode != Mode::JsonStream {
         return Err(CliError::Conflict("--count", "anything but --json-stream"));
     }
     if cli.verbose {
-        return Err(CliError::Conflict("--verbose", "anything but --version"));
+        return Err(CliError::NeedsFlag("--verbose", "--version"));
     }
     // Each command option belongs to exactly one command.
     if let Some((spec, owner)) = seen.owned.iter().find_map(|spec| {
@@ -1104,6 +1184,8 @@ fn bad(flag: &'static str, value: &str, why: String) -> CliError {
 #[derive(Default)]
 struct Seen {
     help: bool,
+    /// The first command named, for `<command> --help`.
+    command: Option<&'static str>,
     version: bool,
     owned: Vec<&'static FlagSpec>,
 }
@@ -1183,8 +1265,8 @@ fn apply_flag(
             cli.duration = Some(parse_span(value).map_err(|why| bad(flag, value, why))?);
         }
         FlagId::Addr => {
-            let why = || String::from("expected HOST:PORT, e.g. 127.0.0.1:9101");
-            cli.addr = Some(value.trim().parse().map_err(|_| bad(flag, value, why()))?);
+            let why = String::from("expected HOST:PORT, e.g. 127.0.0.1:9101 or localhost:9101");
+            cli.addr = Some(parse_addr(value).ok_or_else(|| bad(flag, value, why))?);
         }
         FlagId::Csv => cli.csv = true,
         FlagId::From => cli.from = Some(parse_when(value).map_err(|why| bad(flag, value, why))?),
@@ -1219,6 +1301,10 @@ fn file_arg(
     args: &mut std::vec::IntoIter<String>,
     what: &'static str,
 ) -> Result<PathBuf, CliError> {
+    // `replay --help` asks for help; it does not name a file `--help`.
+    if args.as_slice().first().is_some_and(|word| is_help(word)) {
+        return Ok(PathBuf::new());
+    }
     args.next()
         .filter(|file| !file.is_empty())
         .map(PathBuf::from)
@@ -1248,7 +1334,7 @@ fn consent_mode(
                     args.next();
                     Mode::Update(UpdateAction::Rollback)
                 }
-                Some(other) if other.starts_with('-') => {
+                Some(other) if other.starts_with('-') && !is_help(other) => {
                     return Err(bad(
                         name,
                         other,
@@ -1263,6 +1349,7 @@ fn consent_mode(
                 match flag.as_str() {
                     "--bug" => cli.feedback_bug = true,
                     "--copy" => cli.feedback_copy = true,
+                    other if is_help(other) => break,
                     other if other.starts_with('-') => {
                         return Err(bad(name, other, String::from("expected --bug or --copy")));
                     }
@@ -1293,8 +1380,13 @@ fn apply_command(
     let mode = match name {
         "doctor" => Mode::Doctor,
         "man" => Mode::Man,
+        "completions" if args.as_slice().first().is_some_and(|word| is_help(word)) => {
+            Mode::Completions(Shell::Zsh)
+        }
         "completions" => {
-            let word = args.next().ok_or(CliError::MissingValue(name))?;
+            let word = args
+                .next()
+                .ok_or(CliError::NeedsFlag(name, "a shell: zsh, bash or fish"))?;
             let shell = Shell::by_name(&word).ok_or_else(|| {
                 let choices = shell_words().join(", ");
                 bad(name, &word, format!("expected one of {choices}"))
@@ -1382,7 +1474,28 @@ where
             .iter()
             .find(|command| inline.is_none() && command.name == name)
         {
+            if seen.command.is_none() {
+                seen.command = Some(command.name);
+            }
             apply_command(&mut cli, command, &mut args)?;
+        } else if inline.is_none() && name == "help" && cli.mode == Mode::Tui {
+            // `siltop help` is `--help`; `siltop help report` is
+            // `siltop report --help`. Not in [`COMMANDS`]: it is a way to
+            // ask for help, listed in the help itself.
+            if let Some(word) = args.next().filter(|word| !is_help(word)) {
+                let spec = COMMANDS
+                    .iter()
+                    .find(|spec| spec.name == word)
+                    .ok_or_else(|| {
+                        bad(
+                            "help",
+                            &word,
+                            String::from("not a command; try siltop help"),
+                        )
+                    })?;
+                cli.help_command = Some(spec.name);
+            }
+            cli.mode = Mode::Help;
         } else if cli.mode == Mode::Fleet && inline.is_none() && !arg.starts_with('-') {
             // `fleet --demo a b`: hosts may follow flags too.
             cli.hosts.push(arg);
@@ -1391,7 +1504,12 @@ where
         }
     }
     // Help and version win over everything else, like every other CLI.
-    if seen.help {
+    if seen.help || cli.mode == Mode::Help {
+        // `help report` already named its command; `report --help` names
+        // the command it follows.
+        if cli.mode != Mode::Help {
+            cli.help_command = seen.command;
+        }
         cli.mode = Mode::Help;
     } else if seen.version {
         cli.version_json = cli.mode == Mode::Json;
@@ -1607,7 +1725,7 @@ mod tests {
 
     #[test]
     fn fleet_needs_a_host_and_never_takes_a_flag_as_one() {
-        assert!(matches!(err(&["fleet"]), CliError::MissingValue("fleet")));
+        assert_eq!(err(&["fleet"]).to_string(), "fleet needs at least one host");
         assert!(matches!(err(&["fleet", "--bogus"]), CliError::Unknown(_)));
         assert!(
             matches!(err(&["studio"]), CliError::Unknown(_)),
@@ -1719,8 +1837,14 @@ mod tests {
             (&["record", "serve"], "record cannot be combined with serve"),
             (
                 &["serve", "--addr", "localhost"],
-                "--addr \"localhost\": expected HOST:PORT, e.g. 127.0.0.1:9101",
+                "--addr \"localhost\": expected HOST:PORT, e.g. 127.0.0.1:9101 or localhost:9101",
             ),
+            (
+                &["completions"],
+                "completions needs a shell: zsh, bash or fish",
+            ),
+            (&["--verbose"], "--verbose needs --version"),
+            (&["fleet", "--demo"], "fleet needs at least one host"),
             (
                 &["record", "--duration", "0s"],
                 "--duration \"0s\": must be at least 1s",
@@ -1952,9 +2076,88 @@ mod tests {
     fn unknown_theme_lists_the_choices() {
         let message = err(&["--theme", "neon"]).to_string();
         assert!(message.starts_with("--theme \"neon\": unknown theme; try auto, "));
-        for name in Theme::names() {
+        // Every accepted theme, the pack's too (`dracula`, `rose-pine`),
+        // not only the ten core built-ins.
+        for name in Theme::catalog() {
+            assert!(message.contains(name), "{name} missing from {message}");
+            assert!(ok(&["--theme", name]).theme.is_some() || name == Theme::AUTO);
+        }
+        for name in ["dracula", "rose-pine"] {
             assert!(message.contains(name), "{name} missing from {message}");
         }
+    }
+
+    /// Regression: `replay --help` said "--help: no such file" and `help
+    /// replay` was an unknown argument. Every command answers `--help`,
+    /// `-h` and `help <command>` with its own usage, and `help` alone is
+    /// the whole help.
+    #[test]
+    fn every_command_has_its_own_help() {
+        for command in COMMANDS {
+            let name = command.name;
+            for args in [
+                vec![name, "--help"],
+                vec![name, "-h"],
+                vec!["help", name],
+                vec!["--demo", name, "--help"],
+            ] {
+                let cli = ok(&args);
+                assert_eq!(cli.mode, Mode::Help, "{args:?}");
+                assert_eq!(cli.help_command, Some(name), "{args:?}");
+            }
+            let text = help_text(Some(name));
+            assert!(text.starts_with(&format!("Usage: siltop {name}")), "{text}");
+            assert!(text.contains(command.help), "{text}");
+            assert!(text.contains("-h, --help"), "{text}");
+            for spec in FLAGS.iter().filter(|spec| {
+                spec.owner
+                    .is_some_and(|o| o.command == name || o.also.contains(&name))
+            }) {
+                assert!(text.contains(spec.long), "{name}: {}", spec.long);
+            }
+            for (word, ..) in command.subs {
+                assert!(text.contains(&format!("{name} {word}")), "{text}");
+            }
+            for line in text.lines() {
+                assert!(line.chars().count() <= 80, "{line}");
+            }
+        }
+        assert_eq!(ok(&["help"]).help_command, None);
+        assert_eq!(help_text(None), usage());
+        assert_eq!(
+            ok(&["replay", "t.ptrace", "--help"]).help_command,
+            Some("replay")
+        );
+        assert_eq!(
+            err(&["help", "nope"]).to_string(),
+            "help \"nope\": not a command; try siltop help"
+        );
+        let bench = help_text(Some("bench"));
+        assert!(
+            bench.contains("--duration") && bench.contains("--light"),
+            "{bench}"
+        );
+        assert!(!bench.contains("--addr"), "{bench}");
+    }
+
+    /// `serve --addr localhost:9199` resolves, on loopback; an address
+    /// stays as typed.
+    #[test]
+    fn addr_accepts_a_name_and_prefers_loopback() {
+        let cli = ok(&["serve", "--addr", "localhost:9199"]);
+        let addr = cli.addr.unwrap();
+        assert!(addr.ip().is_loopback(), "{addr}");
+        assert_eq!(addr.port(), 9199);
+        assert_eq!(
+            ok(&["serve", "--addr", "[::1]:9101"])
+                .addr
+                .map(|a| a.to_string())
+                .as_deref(),
+            Some("[::1]:9101")
+        );
+        assert!(parse_addr("localhost").is_none());
+        assert!(parse_addr("localhost:http").is_none());
+        assert!(parse_addr(":9101").is_none());
     }
 
     #[test]
@@ -2207,7 +2410,7 @@ mod tests {
         assert!(ok(&["--verbose", "-V"]).verbose);
         assert_eq!(
             err(&["--verbose"]),
-            CliError::Conflict("--verbose", "anything but --version")
+            CliError::NeedsFlag("--verbose", "--version")
         );
         assert_eq!(
             err(&["--verbose=1", "-V"]),

@@ -37,6 +37,27 @@ pub enum AppMsg {
     UpdateFailed {
         message: String,
     },
+    /// The answer to a check the user asked for (`U`, the menu).
+    UpdateChecked(ManualCheck),
+}
+
+/// What a manual update check found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManualCheck {
+    /// A newer release, with what the update dialog needs to install it.
+    Newer {
+        version: String,
+        url: String,
+        sha256: String,
+        notes: String,
+        brew: bool,
+    },
+    /// This build is the latest release (or newer).
+    Current,
+    /// No answer from GitHub: offline, blocked, timed out.
+    Unreachable,
+    /// GitHub answered with something that is not a usable release.
+    Failed(String),
 }
 
 /// Hold the first frame until data arrives, so the layout does not jump

@@ -5,7 +5,7 @@
 //! everything before it.
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,7 @@ pub fn default_out(unix_s: u64) -> PathBuf {
 
 /// Opens `path` for a new trace, refusing to overwrite an earlier one.
 /// Only its owner may read it: a trace shows what this user was running.
+/// A failure reads as one plain line naming the path.
 pub fn create(path: &Path) -> Result<std::fs::File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -35,7 +36,22 @@ pub fn create(path: &Path) -> Result<std::fs::File> {
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options
         .open(path)
-        .map_err(|err| Error::system(format!("{}: {err}", path.display())))
+        .map_err(|err| Error::from(io::Error::new(err.kind(), create_error(path, &err))))
+}
+
+fn create_error(path: &Path, err: &io::Error) -> String {
+    let shown = path.display();
+    match err.kind() {
+        io::ErrorKind::AlreadyExists => format!("{shown} already exists; pass a different --out"),
+        io::ErrorKind::NotFound => {
+            let folder = path
+                .parent()
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            format!("no such folder: {}", folder.display())
+        }
+        _ => format!("{shown}: {}", crate::io_reason(err)),
+    }
 }
 
 /// Primes rates (that first tick is never recorded, as `--json`), then

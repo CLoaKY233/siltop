@@ -417,6 +417,20 @@ impl BtopTheme {
         Self { keys }
     }
 
+    /// The first `theme[key]="value"` line whose value is not a colour,
+    /// as `(line number from 1, key, value)`. An empty value is btop's
+    /// "use the default" and is fine.
+    #[must_use]
+    pub fn bad_colour(text: &str) -> Option<(usize, String, String)> {
+        text.lines().enumerate().find_map(|(i, line)| {
+            let rest = line.trim().strip_prefix("theme[")?;
+            let (key, value) = rest.split_once("]=")?;
+            let value = unquote(value);
+            (!value.is_empty() && btop_color(value).is_none())
+                .then(|| (i + 1, key.trim().to_owned(), value.to_owned()))
+        })
+    }
+
     #[must_use]
     pub fn get(&self, key: &str) -> Option<Rgb> {
         self.keys.iter().find(|(k, _)| k == key).map(|(_, c)| *c)
@@ -646,6 +660,16 @@ mod tests {
         let catalog = Theme::catalog();
         assert_eq!(&catalog[..11], &Theme::names()[..]);
         assert_eq!(&catalog[11..18], &Theme::pack()[..]);
+    }
+
+    #[test]
+    fn btop_bad_colour_names_the_first_bad_line() {
+        let text = "# comment\ntheme[main_fg]=\"#ffffff\"\ntheme[main_bg]=\"\"\ntheme[hi_fg]=\"#zzzzzz\"\n";
+        assert_eq!(
+            BtopTheme::bad_colour(text),
+            Some((4, String::from("hi_fg"), String::from("#zzzzzz")))
+        );
+        assert_eq!(BtopTheme::bad_colour("theme[main_fg]=\"10 20 30\""), None);
     }
 
     #[test]

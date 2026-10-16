@@ -116,7 +116,7 @@ def main():
         with open(os.path.join(xdg, "siltop", "config.toml"), "w", encoding="utf-8") as f:
             f.write(f"interval_ms = {opts.interval_ms}\n")
     argv = [opts.bin] + shlex.split(opts.args)
-    pid, fd = ptyterm.spawn(argv, cols, rows, ptyterm.child_env(xdg))
+    pid, fd = ptyterm.spawn(argv, cols, rows, ptyterm.child_env(xdg, onboarding=False))
     responder = ptyterm.Responder()
     alive = [True]
 

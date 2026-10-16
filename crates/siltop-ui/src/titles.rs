@@ -314,7 +314,20 @@ pub(crate) fn power(view: &AppView<'_>, theme: &Theme) -> Title {
     let ink = |w: &p::Watts, live: Style| if w.approx { theme.dim() } else { live };
     let system = p::watts(snap.power.system);
     if let Some(w) = &system {
-        t.push_fixed(Keep::Always, w.text.clone(), WATT_W, ink(w, theme.title()));
+        // A narrow box keeps the draw as whole watts (`8W`) over nothing.
+        let whole = snap
+            .power
+            .system
+            .and_then(siltop_core::Reading::usable)
+            .map(|watts| format!("{}{:.0}W", if w.approx { "≈" } else { "" }, watts.round()));
+        let short = whole.filter(|whole| whole.chars().count() < w.text.chars().count());
+        t.push_token(
+            Keep::Always,
+            w.text.clone(),
+            short,
+            WATT_W,
+            ink(w, theme.title()),
+        );
     }
     if let Some(age) = p::held_age(snap.power.system) {
         t.push(Keep::Low, age, theme.dim());
@@ -333,10 +346,18 @@ pub(crate) fn power(view: &AppView<'_>, theme: &Theme) -> Title {
 }
 
 /// A rate token: `↓1.2MB/s`, with zero as a dim `↓0`.
+/// A narrow box keeps the number and its prefix (`↓1.2M`) before it drops
+/// the token: the box's own label says what is counted.
 fn rate_token(title: &mut Title, keep: Keep, arrow: &str, text: &str, live: Style, theme: &Theme) {
     let style = if text == "0" { theme.dim() } else { live };
     let pad = RATE_W + arrow.chars().count();
-    title.push_fixed(keep, format!("{arrow}{text}"), pad, style);
+    // Only the headline: a title never mixes `↓155KB/s` with `↑11K`.
+    let short = ["B/s", "b/s"]
+        .iter()
+        .find_map(|unit| text.strip_suffix(unit))
+        .filter(|_| keep == Keep::Always)
+        .map(|head| format!("{arrow}{head}"));
+    title.push_token(keep, format!("{arrow}{text}"), short, pad, style);
 }
 
 /// CPU die temperature: the cpu title is its one home.
@@ -1062,6 +1083,22 @@ mod tests {
         fx.snap.power.system = None;
         let line = text(&power(&fx.view(), &theme).full(&theme));
         assert!(line.contains("79% ▼ 6.9W"), "{line:?}");
+    }
+
+    /// Regression: at 80x24 the net (18 wide) and power (17 wide) boxes
+    /// showed bare labels; a short form keeps the headline value.
+    #[test]
+    fn narrow_net_and_power_titles_keep_their_value() {
+        let theme = Theme::default();
+        let mut fx = rich();
+        fx.snap.network.rx_bps = 8 * 1_234_000;
+        fx.snap.power.system = Some(siltop_core::Reading::measured(7.6));
+        let narrow_net = text(&net(&fx.view(), &theme).fit(budget(18, 0), &theme));
+        assert!(narrow_net.contains("↓1.2M"), "{narrow_net:?}");
+        let narrow_power = text(&power(&fx.view(), &theme).fit(budget(17, 0), &theme));
+        assert!(narrow_power.contains("8W"), "{narrow_power:?}");
+        let wide = text(&power(&fx.view(), &theme).fit(budget(60, 0), &theme));
+        assert!(wide.contains("7.6W"), "{wide:?}");
     }
 
     #[test]

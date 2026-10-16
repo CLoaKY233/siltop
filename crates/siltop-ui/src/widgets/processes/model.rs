@@ -30,6 +30,8 @@ pub struct ModelRow {
     /// Summed values the row stands for: an app group, or a collapsed
     /// subtree. `None` for a row that is just its own process.
     pub agg: Option<Agg>,
+    /// An app group's row, labelled by its bundle rather than its head.
+    pub app_group: bool,
 }
 
 impl ModelRow {
@@ -756,9 +758,20 @@ pub(super) fn app_bundle(proc: &Process) -> Option<&str> {
     (!bundle.contains(".framework/")).then_some(bundle)
 }
 
+/// What a bundle is called on screen: `Ghostty` for `/Applications/Ghostty.app`.
+#[must_use]
+pub(super) fn bundle_name(bundle: &str) -> &str {
+    let file = bundle.rsplit('/').next().unwrap_or(bundle);
+    file.strip_suffix(".app").unwrap_or(file)
+}
+
 /// A bundle's head process: the one running the bundle's own executable
-/// (no nested `.app` after it), lowest pid first; else the lowest pid.
+/// (no nested `.app` after it, named like the bundle), lowest pid first;
+/// else the lowest pid. A launcher beside the main binary (Ghostty's
+/// `disclaimer`) is not the app.
 fn group_head(processes: &[Process], bundle: &str, members: &[usize]) -> Option<usize> {
+    let app = bundle_name(bundle);
+    let named = |i: usize| processes[i].name.eq_ignore_ascii_case(app);
     let nested = |i: usize| {
         app_bundle(&processes[i])
             .zip(processes[i].command.as_deref())
@@ -770,7 +783,7 @@ fn group_head(processes: &[Process], bundle: &str, members: &[usize]) -> Option<
     members
         .iter()
         .copied()
-        .min_by_key(|&i| (nested(i), processes[i].pid))
+        .min_by_key(|&i| (nested(i), !named(i), processes[i].pid))
 }
 
 type AppRows = (Vec<ModelRow>, HashMap<u32, Vec<u32>>);
@@ -820,8 +833,11 @@ fn app_rows(processes: &[Process], needle: &str, order: Order, open: &FoldSet<St
         }
         let agg = Agg::of(members.iter().map(|&i| &processes[i]));
         let helpers: Vec<usize> = members.into_iter().filter(|&i| i != head).collect();
+        let mut rep = agg.onto(&processes[head]);
+        // A group sorts by name as it is labelled: the app's.
+        bundle_name(bundle).clone_into(&mut rep.name);
         entries.push(Entry {
-            rep: agg.onto(&processes[head]),
+            rep,
             head,
             group: Some(Group {
                 bundle,
@@ -848,6 +864,7 @@ fn app_rows(processes: &[Process], needle: &str, order: Order, open: &FoldSet<St
         rows.push(ModelRow {
             fold: if is_open { Fold::Open } else { Fold::Closed },
             agg: Some(agg),
+            app_group: true,
             ..leaf(processes, head, 0, Guide::default())
         });
         members.insert(

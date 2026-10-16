@@ -6,6 +6,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
 use crate::widgets::AppView;
+use crate::widgets::processes::fit;
 
 /// One titled block of help rows: `(keys, what they do)`. The binary builds
 /// these from its keymap, so help can never disagree with the keys.
@@ -43,9 +44,14 @@ pub(super) fn help_lines(groups: &[HelpGroup]) -> Vec<(String, bool)> {
     out
 }
 
-/// The help popup: as wide and tall as its text, never bigger than `area`.
+/// The help popup: as wide and tall as its text, never bigger than `area`
+/// less its last row, which the footer (and its `q quit`) keeps.
 #[must_use]
 pub fn help_rect(area: Rect, groups: &[HelpGroup]) -> Rect {
+    let area = Rect {
+        height: area.height.saturating_sub(1),
+        ..area
+    };
     let lines = help_lines(groups);
     let widest = lines.iter().map(|(l, _)| l.width()).max().unwrap_or(0);
     let width = u16::try_from(widest + 3).unwrap_or(u16::MAX);
@@ -74,7 +80,8 @@ pub(super) fn render(frame: &mut Frame, area: Rect, view: &AppView<'_>, theme: &
         .take(visible)
         .map(|(text, section)| {
             let style = if *section { theme.title() } else { theme.fg() };
-            Line::from(Span::styled(text.clone(), style))
+            // A narrow terminal cuts a row with `…`, never mid-word.
+            Line::from(Span::styled(fit(text, rect.width.saturating_sub(3)), style))
         })
         .collect();
     let more = all.len() > visible;
@@ -201,6 +208,29 @@ mod tests {
         assert!(!last.contains("k00"), "{last}");
         fx.help_scroll = u16::MAX;
         assert_eq!(paint(&fx.view(), 60, 16).join("\n"), last, "scroll clamps");
+    }
+
+    /// Regression: the popup's bottom border overwrote the footer's
+    /// `q quit`, and at 40 cols rows were cut mid-word (`cycle work / glanc`).
+    #[test]
+    fn help_keeps_the_footer_row_and_ellipsizes_narrow_rows() {
+        let mut fx = crate::widgets::tests_support::fixture("");
+        fx.help_groups = groups(4);
+        for (w, h) in [(40, 12), (60, 16), (120, 30)] {
+            let rect = help_rect(Rect::new(0, 0, w, h), &fx.help_groups);
+            assert!(rect.bottom() < h, "{w}x{h}: {rect:?} covers the footer");
+        }
+        let screen = paint(&fx.view(), 40, 12);
+        let rows = screen.join("\n");
+        assert!(rows.contains('…'), "{rows}");
+        assert!(
+            !rows.contains("settings (sampling, panes, processes)"),
+            "{rows}"
+        );
+        assert!(
+            screen[11].trim().is_empty(),
+            "footer row left alone: {rows}"
+        );
     }
 
     #[test]

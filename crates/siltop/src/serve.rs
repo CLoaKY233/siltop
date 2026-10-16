@@ -336,8 +336,14 @@ pub fn handle<S: CapRead + Write>(
         ("GET", _) => ("404 Not Found", String::from("try /metrics\n")),
         _ => ("405 Method Not Allowed", String::from("GET only\n")),
     };
+    // RFC 9110: a 405 names the methods the resource does allow.
+    let allow = if status.starts_with("405") {
+        "Allow: GET\r\n"
+    } else {
+        ""
+    };
     let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {CONTENT_TYPE}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\n{allow}Content-Type: {CONTENT_TYPE}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes())?;
@@ -684,6 +690,12 @@ siltop_process_cpu_ratio{name="idle",pid="9"} 0.005
                 "{request:?}"
             );
             assert!(!response.contains("siltop_up"));
+            // A 405 says what is allowed; nothing else carries the header.
+            assert_eq!(
+                response.contains("\r\nAllow: GET\r\n"),
+                status.starts_with("405"),
+                "{request:?}: {response}"
+            );
         }
         assert!(roundtrip("GET /metrics?x=1 HTTP/1.0\r\n\r\n").contains("200 OK"));
     }

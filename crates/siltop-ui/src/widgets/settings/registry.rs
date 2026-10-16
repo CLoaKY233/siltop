@@ -3,10 +3,11 @@
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use siltop_core::{
-    Config, CpuUnit, INTERVALS, PROC_RATIO_MAX, PROC_RATIO_MIN, Preset, ProcSort, Switch,
-    parse_surface, rule_enabled, set_rule_enabled, surface_label,
+    Config, CpuUnit, PROC_RATIO_MAX, PROC_RATIO_MIN, Preset, ProcSort, Switch, parse_surface,
+    rule_enabled, set_rule_enabled, surface_label,
 };
 
 use crate::theme::{Icons, Theme};
@@ -75,6 +76,8 @@ pub enum Value {
     /// Index into the kind's option list.
     Choice(usize),
     Number(u16),
+    /// A sample interval in milliseconds, preset or not.
+    Millis(u64),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +90,9 @@ pub enum Kind {
         step: u16,
         unit: &'static str,
     },
+    /// The sample interval: shows any value (`-i 750ms`) and steps to the
+    /// nearest preset that way, clamped at both ends like `[` / `]`.
+    Interval,
 }
 
 /// One row of the settings screen.
@@ -128,6 +134,12 @@ impl SettingDef {
                 }
                 .clamp(min, max),
             ),
+            (Kind::Interval, Value::Millis(ms)) => {
+                let current = Duration::from_millis(ms);
+                let next = config.clone().with_interval(current);
+                let next = next.step_interval(step == Step::Prev);
+                Value::Millis(u64::try_from(next.as_millis()).unwrap_or(ms))
+            }
             (_, other) => other,
         }
     }
@@ -141,12 +153,17 @@ impl SettingDef {
     /// The value as the screen shows it.
     #[must_use]
     pub fn display(&self, config: &Config) -> Cow<'static, str> {
+        if self.id == "preset" && Preset::matching(config).is_none() && default_look(config) {
+            // Nothing picked and nothing changed: not a custom look.
+            return Cow::Borrowed("default");
+        }
         match (self.kind, (self.get)(config)) {
             (_, Value::Bool(on)) => Cow::Borrowed(if on { "on" } else { "off" }),
             (Kind::Cycle(options), Value::Choice(at)) => {
                 Cow::Borrowed(options().get(at).copied().unwrap_or("?"))
             }
             (Kind::Number { unit, .. }, Value::Number(n)) => Cow::Owned(format!("{n}{unit}")),
+            (_, Value::Millis(ms)) => Cow::Owned(crate::widgets::interval_label(ms)),
             (_, Value::Choice(at)) => Cow::Owned(at.to_string()),
             (_, Value::Number(n)) => Cow::Owned(n.to_string()),
         }
@@ -187,9 +204,6 @@ fn bool_of(value: Value) -> Option<bool> {
     }
 }
 
-/// Spelled as [`interval_label`](crate::widgets::interval_label) spells
-/// them; a test holds the two together.
-const INTERVAL_LABELS: [&str; INTERVALS.len()] = ["250 ms", "500 ms", "1 s", "2 s", "5 s"];
 const SURFACES: [&str; 3] = ["auto", "work", "glance"];
 const NET_UNITS: [&str; 2] = ["bytes/s", "bits/s"];
 /// Every auto / on / off row ([`Switch`]) cycles these labels.
@@ -220,6 +234,33 @@ fn preset_get(c: &Config) -> Value {
     choice(&PRESETS, siltop_core::preset_label(Preset::matching(c)))
 }
 
+/// The boxes, layout and sort a fresh config has: what the preset row
+/// calls `default` rather than `custom`.
+fn default_look(c: &Config) -> bool {
+    let d = Config::default();
+    (
+        c.show_gpu,
+        c.show_power,
+        c.show_net,
+        c.show_disk,
+        c.show_fans,
+        c.show_cores,
+        c.surface,
+        c.proc_sort,
+        c.zen,
+    ) == (
+        d.show_gpu,
+        d.show_power,
+        d.show_net,
+        d.show_disk,
+        d.show_fans,
+        d.show_cores,
+        d.surface,
+        d.proc_sort,
+        d.zen,
+    )
+}
+
 /// Picking a preset applies it. `custom` cannot be applied, so a step that
 /// lands on it from either end wraps on to the preset past it: next from
 /// ricer is silicon, back from silicon is ricer.
@@ -237,9 +278,6 @@ fn preset_set(c: &mut Config, v: Value) {
     }
 }
 
-fn interval_labels() -> &'static [&'static str] {
-    &INTERVAL_LABELS
-}
 fn surfaces() -> &'static [&'static str] {
     &SURFACES
 }
@@ -316,13 +354,11 @@ pub static SETTINGS: &[SettingDef] = &[
         category: Category::General,
         label: "sample every",
         description: "How often siltop samples. Faster is smoother; slower uses less power.",
-        kind: Kind::Cycle(interval_labels),
-        get: |c| Value::Choice(INTERVALS.iter().position(|i| *i == c.interval).unwrap_or(1)),
+        kind: Kind::Interval,
+        get: |c| Value::Millis(u64::try_from(c.interval.as_millis()).unwrap_or(u64::MAX)),
         set: |c, v| {
-            if let Value::Choice(at) = v
-                && let Some(interval) = INTERVALS.get(at)
-            {
-                c.interval = *interval;
+            if let Value::Millis(ms) = v {
+                c.interval = Duration::from_millis(ms);
             }
         },
     },
@@ -811,6 +847,28 @@ mod tests {
         assert_eq!(shown("proc.ratio"), "55%");
     }
 
+    /// Regression: `-i 750ms` read as `500 ms` here (an unknown interval
+    /// fell back to the second preset), and ← at 250 ms wrapped to 5 s
+    /// while `[` clamps.
+    #[test]
+    fn interval_row_shows_any_value_and_clamps_like_the_keys() {
+        let def = SETTINGS.iter().find(|d| d.id == "interval_ms").unwrap();
+        let mut cfg = Config::default().with_interval(Duration::from_millis(750));
+        assert_eq!(def.display(&cfg), "750 ms");
+        def.step(&mut cfg, Step::Prev);
+        assert_eq!(def.display(&cfg), "500 ms");
+        def.step(&mut cfg, Step::Prev);
+        def.step(&mut cfg, Step::Prev);
+        assert_eq!(def.display(&cfg), "250 ms", "clamped, no wrap to 5 s");
+        let mut cfg = Config::default().with_interval(Duration::from_millis(750));
+        def.step(&mut cfg, Step::Next);
+        assert_eq!(def.display(&cfg), "1 s");
+        for _ in 0..5 {
+            def.step(&mut cfg, Step::Next);
+        }
+        assert_eq!(def.display(&cfg), "5 s", "clamped at the slow end");
+    }
+
     #[test]
     fn theme_options_are_auto_then_every_builtin() {
         let options = themes();
@@ -873,8 +931,13 @@ mod tests {
     }
 
     #[test]
-    fn preset_row_reads_custom_for_the_default_config() {
-        assert_eq!(preset_row().display(&Config::default()), "custom");
+    fn preset_row_reads_default_for_a_fresh_config_and_custom_once_changed() {
+        assert_eq!(preset_row().display(&Config::default()), "default");
+        let changed = Config {
+            show_disk: !Config::default().show_disk,
+            ..Config::default()
+        };
+        assert_ne!(preset_row().display(&changed), "default");
     }
 
     #[test]
@@ -922,7 +985,8 @@ mod tests {
     /// two copies of the formatter the footer and the toast used.
     #[test]
     fn interval_labels_match_the_one_formatter() {
-        for (ms, label) in INTERVALS.iter().zip(INTERVAL_LABELS) {
+        let labels = ["250 ms", "500 ms", "1 s", "2 s", "5 s"];
+        for (ms, label) in siltop_core::INTERVALS.iter().zip(labels) {
             let ms = u64::try_from(ms.as_millis()).unwrap();
             assert_eq!(crate::widgets::interval_label(ms), label);
         }

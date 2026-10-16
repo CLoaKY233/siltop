@@ -21,6 +21,7 @@ pub(crate) use registry::{Kind, visible};
 use crate::layout::Panel;
 use crate::theme::Theme;
 use crate::widgets::AppView;
+use crate::widgets::processes::fit;
 
 /// Category column width, border gap included.
 const CATEGORY_W: u16 = 14;
@@ -385,16 +386,56 @@ pub(super) fn render(frame: &mut Frame, area: Rect, view: &AppView<'_>, state: &
         },
         |def| def.description,
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(description, theme.dim())))
-            .wrap(ratatui::widgets::Wrap { trim: true }),
-        g.description,
-    );
+    let lines: Vec<Line> = wrap_fit(
+        description,
+        usize::from(g.description.width),
+        usize::from(g.description.height),
+    )
+    .into_iter()
+    .map(|line| Line::from(Span::styled(line, theme.dim())))
+    .collect();
+    frame.render_widget(Paragraph::new(lines), g.description);
     line_at(
         frame,
         g.hint,
         hint_line(view, state, usize::from(g.hint.width), theme),
     );
+}
+
+/// `text` word-wrapped to `width`, at most `rows` lines; the last line
+/// ends in `…` when anything was left over.
+fn wrap_fit(text: &str, width: usize, rows: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut words = text.split_whitespace().peekable();
+    while lines.len() < rows && words.peek().is_some() {
+        let mut line = String::new();
+        while let Some(word) = words.peek() {
+            let need = line.width() + usize::from(!line.is_empty()) + word.width();
+            if need > width && !line.is_empty() {
+                break;
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+            words.next();
+        }
+        lines.push(line);
+    }
+    if words.peek().is_some()
+        && let Some(last) = lines.last_mut()
+    {
+        // the cut always shows, even when the last line was full
+        let room = width.min(last.width() + 1);
+        *last = fit(
+            &format!("{last} …"),
+            u16::try_from(room).unwrap_or(u16::MAX),
+        );
+    }
+    lines
+        .into_iter()
+        .map(|l| fit(&l, u16::try_from(width).unwrap_or(u16::MAX)))
+        .collect()
 }
 
 /// Title bar, close corner, the category column and its rule.
@@ -478,10 +519,14 @@ fn paint_rows(
                     },
                     Style::default().fg(theme.hi),
                 ),
-                Span::styled(format!(" {}", def.label), label_style),
+                // a gap always parts the label from its value
+                Span::styled(
+                    fit(&format!(" {}", def.label), name.width.saturating_sub(2)),
+                    label_style,
+                ),
             ]),
         );
-        let mut line = value_line(def, config, focused, theme);
+        let mut line = value_line(def, config, focused, value.width, theme);
         if !state.filter.is_empty() {
             // search spans sections: say where each hit lives
             line.spans.push(Span::styled(
@@ -511,8 +556,15 @@ fn section_title(state: &SettingsState) -> String {
     }
 }
 
-fn value_line(def: &SettingDef, config: &Config, focused: bool, theme: &Theme) -> Line<'static> {
-    let shown = def.display(config).into_owned();
+fn value_line(
+    def: &SettingDef,
+    config: &Config,
+    focused: bool,
+    width: u16,
+    theme: &Theme,
+) -> Line<'static> {
+    // `‹ ` before and ` ›` after the value
+    let shown = fit(&def.display(config), width.saturating_sub(4));
     let value_style = if focused {
         Style::default().fg(theme.hi)
     } else {
@@ -660,9 +712,13 @@ fn about(frame: &mut Frame, extra: Rect, view: &AppView<'_>) {
         .chain(crate::widgets::identity::facts(view.snapshot))
         .filter(|(_, v)| !v.is_empty())
         .map(|(k, v)| {
+            let key = extra_key(k);
+            let room = extra
+                .width
+                .saturating_sub(u16::try_from(key.width()).unwrap_or(u16::MAX));
             Line::from(vec![
-                Span::styled(extra_key(k), theme.dim()),
-                Span::styled(v, theme.fg()),
+                Span::styled(key, theme.dim()),
+                Span::styled(fit(&v, room), theme.fg()),
             ])
         })
         .collect();
@@ -892,6 +948,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Regression: at 30x8 the label ran into its value
+    /// (`sample every‹ 500 ms ›`) and the description was cut mid-word with
+    /// no `…`; a long about path was cut the same way.
+    #[test]
+    fn narrow_settings_keep_a_gap_and_mark_every_cut() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let paint = |fx: &crate::widgets::tests_support::Fixture, w: u16, h: u16| {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|frame| crate::widgets::render_app(frame, &fx.view()))
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            (0..h)
+                .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut fx = crate::widgets::golden::m5_pro();
+        fx.settings = true;
+        fx.settings_state = SettingsState::open(Category::General);
+        let text = paint(&fx, 30, 8);
+        assert!(text.contains("sample eve… ‹"), "{text}");
+        assert!(text.contains("slower…"), "{text}");
+        fx.settings_state = SettingsState::open(Category::About);
+        let text = paint(&fx, 40, 12);
+        assert!(text.contains("~/.config/siltop/…"), "{text}");
+    }
+
+    #[test]
+    fn wrap_fit_marks_what_it_leaves_out() {
+        assert_eq!(wrap_fit("a bb ccc", 4, 2), ["a bb", "ccc"]);
+        assert_eq!(wrap_fit("a bb ccc dd", 4, 2), ["a bb", "ccc…"]);
+        assert_eq!(wrap_fit("aaaa bbbb cc", 4, 2), ["aaaa", "bbb…"]);
+        assert!(wrap_fit("", 4, 2).is_empty());
     }
 
     #[test]

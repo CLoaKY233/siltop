@@ -114,7 +114,7 @@ pub(crate) fn dossier(read_only: bool) -> Vec<Chip> {
         .collect()
 }
 
-/// `siltop fleet`'s footer on the card grid (Esc there quits too).
+/// `siltop fleet`'s footer on the card grid.
 pub(crate) const FLEET_GRID: [Chip; 2] = [
     Chip::new("enter", "processes", Hit::Expand(Panel::Processes)),
     QUIT,

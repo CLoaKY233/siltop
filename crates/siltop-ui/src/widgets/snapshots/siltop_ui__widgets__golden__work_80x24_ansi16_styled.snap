@@ -16,7 +16,7 @@ description: work_80x24 lowered to 16 colours; legend at the bottom
 |addddddddddddddddaafffffffffffffffacdcccccccccccccccccccccccccdddddddccccccccccd|
 |│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ ollama-runner              31.9      9.6G│|
 |addddddddddddddddaafffffffffffffffacdcccccccccccccccccccccccccdddddddccccccccccd|
-|╰─−2m────────now─╯╰───────────────╯ │ rust-analyzer              22.7      2.5G│|
+|╰─−2m────────now─╯╰─−2m───────now─╯ │ rust-analyzer              22.7      2.5G│|
 |aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
 |╭ mem  15.2G ─[↗]╮╭ heat  64° ─[↗]╮ │ WindowServer               14.2      412M│|
 |aaaaaaabbbbbaaaaaaaaaaaaaahhhaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
@@ -26,17 +26,17 @@ description: work_80x24 lowered to 16 colours; legend at the bottom
 |ahhhhhhhhhhhhhhhhaaiiccciiiiiiiiiiacdcccccccccccccccccccccccccdddddddccccccccccd|
 |│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ SourceKitService            7.9      880M│|
 |ahhhhhhhhhhhhhhhhaaiiiiiiiiiiiiiiiacdcccccccccccccccccccccccccdddddddccccccccccd|
-|╰─−2m────────now─╯╰───────────────╯ │ Brave Browser               6.4      488M│|
+|╰─−2m────────now─╯╰─−2m───────now─╯ │ Brave Browser               6.4      488M│|
 |aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
-|╭ net ────────[↗]╮╭ disk ──────[↗]╮ │ zed                         5.2      739M│|
-|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
+|╭ net  ↓155K ─[↗]╮╭ disk ──────[↗]╮ │ zed                         5.2      739M│|
+|aaaaaaabbbbbaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
 |│                ││               │ │ cargo                       4.4       72M│|
 |accccccccccccccccaacccccccccccccccacdcccccccccccccccccccccccccdddddddccccccccccd|
 |│⣤⣤⣤⣀⡀  ⢀⣠⣄⣤⣤⣄⣀⣀ ││⣤⢀ ⣀⣤⡄ ⢀⣠⣄⡀ ⣤⣀⣀│ │ mds_stores                  3.7       96M│|
 |aiiiiicciiiiiiiicaajjcjjjcjjjjcjjjacdcccccccccccccccccccccccccdddddddccccccccccd|
 |│                ││               │ │ Xcode                       3.3      1.4G│|
 |accccccccccccccccaacccccccccccccccacdcccccccccccccccccccccccccdddddddccccccccccd|
-|╰─−2m────────now─╯╰───────────────╯ │ Simulator                   2.8      402M│|
+|╰─−2m────────now─╯╰─−2m───────now─╯ │ Simulator                   2.8      402M│|
 |aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|
 |╭ power  82% ▼ ──────── 80–95% [↗]╮ │ Brave Browser Helper …      2.6      188M│|
 |aaaaaaaaacccccaaaaaaaaaaaaaaaaaaaaacdcccccccccccccccccccccccccdddddddccccccccccd|

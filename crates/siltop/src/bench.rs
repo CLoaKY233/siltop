@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde::{Deserialize, Serialize};
-use siltop_core::{CpuCluster, Day, History, Result, Snapshot, Thermal, celsius, watts_display};
+use siltop_core::{CpuCluster, Day, History, Result, Snapshot, Thermal, watts_display};
 use siltop_ui::{BenchView, Theme, render_bench};
 
 use crate::cli::Cli;
@@ -35,6 +35,10 @@ pub const DROP_LIMIT: f64 = 0.15;
 /// Consecutive low samples before a clock drop counts: one slow reading is
 /// sampler noise, a second is the chip.
 const DROP_RUN: usize = 2;
+/// A cluster busy at least this share of the time (median over the run)
+/// carried the load. A quieter one, such as the cores `--light` leaves
+/// alone, picks its own clock, so its drop is shown but never judged.
+pub const LOADED: f32 = 0.5;
 /// A fan has responded once it turns this much faster than at the start.
 const FAN_RAMP_RPM: u32 = 300;
 /// Bumped when a field changes meaning; old saved runs are then skipped.
@@ -47,6 +51,8 @@ pub struct ClusterClock {
     pub mhz: u32,
     /// Cores in the cluster, to weight the efficiency figure.
     pub cores: u32,
+    /// Share of the time the cluster was busy, 0..=1.
+    pub busy: f32,
 }
 
 /// What the bench keeps from one snapshot.
@@ -83,6 +89,7 @@ impl Sample {
                     name: cluster_label(all, c),
                     mhz,
                     cores: u32::try_from(cores).unwrap_or(u32::MAX).max(1),
+                    busy: c.active,
                 })
             })
             .collect();
@@ -131,13 +138,29 @@ pub enum Stop {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClusterResult {
     pub name: String,
+    /// The single fastest reading, a boost spike included.
     pub peak_mhz: u32,
-    /// Median of the first [`BASELINE`].
+    /// Median of the first [`BASELINE`]: the clock under load before heat.
     pub baseline_mhz: u32,
     /// Median of the last third of the run.
     pub sustained_mhz: u32,
-    /// How far sustained fell under peak, in percent.
+    /// How far sustained fell under the baseline, in percent (never
+    /// negative). Measured against the early clock under load, not
+    /// [`ClusterResult::peak_mhz`], so one boost reading is not a drop.
     pub drop_pct: f64,
+    /// Median busy share over the run, in percent; `None` in runs saved
+    /// before it was kept.
+    #[serde(default)]
+    pub busy_pct: Option<f64>,
+    /// Whether the load reached this cluster ([`LOADED`]). An unloaded
+    /// cluster's drop never decides the verdict.
+    #[serde(default = "loaded_by_default")]
+    pub loaded: bool,
+}
+
+/// Runs saved before `loaded` was kept loaded every core.
+const fn loaded_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -153,6 +176,9 @@ pub struct FanResult {
 pub enum Verdict {
     Pass,
     Throttled,
+    /// Stopped early (Esc, Ctrl-C or the safety limit) before any throttle:
+    /// too short a run to pass.
+    Incomplete,
 }
 
 /// The report card.
@@ -201,6 +227,18 @@ fn median(mut values: Vec<u32>) -> Option<u32> {
     }
 }
 
+/// Median of busy shares; NaN readings are skipped.
+fn median_busy(mut values: Vec<f32>) -> Option<f32> {
+    values.retain(|v| v.is_finite());
+    values.sort_unstable_by(f32::total_cmp);
+    let n = values.len();
+    match n {
+        0 => None,
+        _ if n % 2 == 1 => Some(values[n / 2]),
+        _ => Some(f32::midpoint(values[n / 2 - 1], values[n / 2])),
+    }
+}
+
 fn pct_below(reference: u32, value: u32) -> f64 {
     if reference == 0 {
         return 0.0;
@@ -219,16 +257,23 @@ fn cluster_names(samples: &[Sample]) -> Vec<String> {
     names
 }
 
-fn clocks_of<'a>(
+fn clusters_of<'a>(
     samples: &'a [Sample],
     name: &'a str,
-) -> impl Iterator<Item = (Duration, u32)> + 'a {
+) -> impl Iterator<Item = (Duration, &'a ClusterClock)> + 'a {
     samples.iter().filter_map(move |s| {
         s.clusters
             .iter()
             .find(|c| c.name == name)
-            .map(|c| (s.at, c.mhz))
+            .map(|c| (s.at, c))
     })
+}
+
+fn clocks_of<'a>(
+    samples: &'a [Sample],
+    name: &'a str,
+) -> impl Iterator<Item = (Duration, u32)> + 'a {
+    clusters_of(samples, name).map(|(at, c)| (at, c.mhz))
 }
 
 fn cluster_result(samples: &[Sample], name: &str) -> Option<ClusterResult> {
@@ -250,18 +295,30 @@ fn cluster_result(samples: &[Sample], name: &str) -> Option<ClusterResult> {
             .collect(),
     )
     .unwrap_or(peak);
+    let busy = median_busy(clusters_of(samples, name).map(|(_, c)| c.busy).collect());
     Some(ClusterResult {
         name: name.to_owned(),
         peak_mhz: peak,
         baseline_mhz: baseline,
         sustained_mhz: sustained,
-        drop_pct: pct_below(peak, sustained).max(0.0),
+        drop_pct: pct_below(baseline, sustained).max(0.0),
+        busy_pct: busy.map(|b| (f64::from(b) * 100.0).round()),
+        loaded: busy.is_none_or(|b| b >= LOADED),
     })
 }
 
-/// The first throttle after the baseline window: a serious thermal state,
-/// or [`DROP_RUN`] samples in a row more than [`DROP_LIMIT`] under a
-/// cluster's baseline. Returns its time and cause.
+/// A clock under this is more than [`DROP_LIMIT`] under the baseline.
+fn floor(cluster: &ClusterResult) -> f64 {
+    f64::from(cluster.baseline_mhz) * (1.0 - DROP_LIMIT)
+}
+
+/// The first throttle: a serious thermal state, or, after the baseline
+/// window, [`DROP_RUN`] samples in a row more than [`DROP_LIMIT`] under a
+/// loaded cluster's baseline. Failing both, a loaded cluster whose
+/// sustained clock ended more than [`DROP_LIMIT`] under it (dips that never
+/// ran two in a row but held the median down) throttled at its first low
+/// reading: a drop over the limit never sits next to a pass. Returns its
+/// time and cause.
 fn first_throttle(samples: &[Sample], clusters: &[ClusterResult]) -> Option<(Duration, String)> {
     let thermal = samples
         .iter()
@@ -270,8 +327,9 @@ fn first_throttle(samples: &[Sample], clusters: &[ClusterResult]) -> Option<(Dur
             let word = s.thermal.word().unwrap_or("serious");
             (s.at, format!("thermal state {word}"))
         });
-    let drops = clusters.iter().filter_map(|c| {
-        let floor = f64::from(c.baseline_mhz) * (1.0 - DROP_LIMIT);
+    let loaded = || clusters.iter().filter(|c| c.loaded);
+    let drops = loaded().filter_map(|c| {
+        let floor = floor(c);
         let mut run = 0;
         clocks_of(samples, &c.name)
             .filter(|(at, _)| *at > BASELINE)
@@ -283,7 +341,23 @@ fn first_throttle(samples: &[Sample], clusters: &[ClusterResult]) -> Option<(Dur
                 })
             })
     });
-    thermal.into_iter().chain(drops).min_by_key(|(at, _)| *at)
+    let mut sustained = loaded()
+        .filter(|c| c.drop_pct > DROP_LIMIT * 100.0)
+        .filter_map(|c| {
+            let floor = floor(c);
+            let low = |(_, mhz): &(Duration, u32)| f64::from(*mhz) < floor;
+            // A median under the floor means some reading is under it too.
+            let (at, _) = clocks_of(samples, &c.name)
+                .filter(|(at, _)| *at > BASELINE)
+                .find(low)
+                .or_else(|| clocks_of(samples, &c.name).find(low))?;
+            Some((at, format!("{} clock -{:.0}%", c.name, c.drop_pct.round())))
+        });
+    thermal
+        .into_iter()
+        .chain(drops)
+        .min_by_key(|(at, _)| *at)
+        .or_else(|| sustained.next())
 }
 
 fn fan_result(samples: &[Sample]) -> Option<FanResult> {
@@ -348,10 +422,12 @@ pub fn analyze(samples: &[Sample], meta: &Meta, stop: Stop) -> Report {
         samples: samples.len(),
         stop,
         clusters,
-        verdict: if throttle.is_some() {
-            Verdict::Throttled
-        } else {
-            Verdict::Pass
+        // A throttle seen before an early stop still counts; a pass needs
+        // the whole planned run.
+        verdict: match (&throttle, stop) {
+            (Some(_), _) => Verdict::Throttled,
+            (None, Stop::Completed) => Verdict::Pass,
+            (None, _) => Verdict::Incomplete,
         },
         throttle_s: throttle.as_ref().map(|(at, _)| at.as_secs_f64()),
         throttle_cause: throttle.map(|(_, cause)| cause),
@@ -478,7 +554,8 @@ pub fn mmss(secs: f64) -> String {
     format!("{:02}:{:02}", total / 60, total % 60)
 }
 
-/// `PASS: no throttling` or `THROTTLED at 00:42 (thermal state serious)`.
+/// `PASS: no throttling`, `THROTTLED at 00:42 (thermal state serious)` or
+/// `incomplete: stopped after 00:03, no verdict`.
 #[must_use]
 pub fn verdict_line(report: &Report) -> String {
     match (report.verdict, report.throttle_s) {
@@ -486,8 +563,17 @@ pub fn verdict_line(report: &Report) -> String {
             let cause = report.throttle_cause.as_deref().unwrap_or("clock drop");
             format!("THROTTLED at {} ({cause})", mmss(at))
         }
+        (Verdict::Incomplete, _) => format!(
+            "incomplete: stopped after {}, no verdict",
+            mmss(report.ran_s)
+        ),
         _ => String::from("PASS: no throttling"),
     }
+}
+
+/// `84°C`: the card is read outside the dashboard, so it names the unit.
+fn degrees(c: f32) -> String {
+    format!("{:.0}°C", c.round())
 }
 
 fn stop_line(stop: Stop) -> Option<String> {
@@ -496,10 +582,30 @@ fn stop_line(stop: Stop) -> Option<String> {
         Stop::Cancelled => Some(String::from("early, by Esc or Ctrl-C")),
         Stop::TooHot { celsius: c } => Some(format!(
             "stopped at {} for safety (limit {})",
-            celsius(c),
-            celsius(SAFETY_C)
+            degrees(c),
+            degrees(SAFETY_C)
         )),
     }
+}
+
+/// `early 4590 → sustained 4420 MHz · drop 3.7% · peak 4608 MHz`: the drop
+/// reads straight off the two clocks before it. A cluster the load never
+/// reached says so instead of showing a drop that means nothing.
+fn cluster_line(c: &ClusterResult) -> String {
+    if !c.loaded {
+        let busy = c.busy_pct.map_or_else(
+            || String::from("not loaded"),
+            |pct| format!("only {pct:.0}% busy"),
+        );
+        return format!(
+            "sustained {} MHz · peak {} MHz · {busy}, drop not judged",
+            c.sustained_mhz, c.peak_mhz
+        );
+    }
+    format!(
+        "early {} → sustained {} MHz · drop {:.1}% · peak {} MHz",
+        c.baseline_mhz, c.sustained_mhz, c.drop_pct, c.peak_mhz
+    )
 }
 
 /// `1200 → 4800 rpm, ramped at 00:12`; a fan at rest reads `off`, never
@@ -549,17 +655,10 @@ pub fn render_text(report: &Report, comparison: Option<&Comparison>) -> String {
         let _ = writeln!(out, "  {key:<width$}{value}");
     };
     for c in &report.clusters {
-        row(
-            &mut out,
-            &c.name,
-            format!(
-                "peak {} MHz · sustained {} MHz · drop {:.1}%",
-                c.peak_mhz, c.sustained_mhz, c.drop_pct
-            ),
-        );
+        row(&mut out, &c.name, cluster_line(c));
     }
     if let Some(t) = report.peak_temp_c {
-        row(&mut out, "peak temp", celsius(t));
+        row(&mut out, "peak temp", degrees(t));
     }
     if let Some(w) = report.avg_cpu_w {
         let eff = report
@@ -779,6 +878,145 @@ where
     }
 }
 
+/// `bench --demo`: the canned M5 Pro under the bench's own load, not the
+/// dashboard session (which idles between bursts and read as a 75% clock
+/// drop beside PASS). From the first sample every loaded core is busy and
+/// the clocks sit near the top of their tables, settling a few percent as
+/// the chip warms; the fans wake and nothing reaches a serious thermal
+/// state: a clean pass. With `--light` only half the threads run, so the
+/// Super cores carry them and most Performance cores idle, as on a real Mac.
+pub struct DemoRun {
+    step: Duration,
+    elapsed: Duration,
+    light: bool,
+}
+
+impl DemoRun {
+    #[must_use]
+    pub const fn new(step: Duration, light: bool) -> Self {
+        Self {
+            step,
+            elapsed: Duration::ZERO,
+            light,
+        }
+    }
+}
+
+impl crate::worker::Tick for DemoRun {
+    fn tick(&mut self) -> Result<Snapshot> {
+        let snap = demo_frame(self.elapsed, self.light);
+        self.elapsed += self.step;
+        Ok(snap)
+    }
+
+    /// The canned battery is not this Mac's.
+    fn on_battery(&self, _snap: &Snapshot) -> bool {
+        false
+    }
+}
+
+/// Deterministic wobble in 0..=1, as the demo session's.
+fn wobble(t: f32, seed: f32) -> f32 {
+    let a = (t * 1.7 + seed * 2.3).sin();
+    let b = (t * 0.41 + seed * 5.1).sin();
+    (0.5 + 0.35 * a + 0.15 * b).clamp(0.0, 1.0)
+}
+
+/// One `bench --demo` frame `elapsed` into the run: the session's calm
+/// opening second (memory, disks, processes) with the CPU, its heat, power
+/// and fans recast as a loaded run. Clusters, cores and fans keep the
+/// session's own chip, so the card names the same Mac as `--demo`.
+#[must_use]
+pub fn demo_frame(elapsed: Duration, light: bool) -> Snapshot {
+    use siltop_core::ClusterKind;
+    let t = elapsed.as_secs_f32();
+    // Warms toward a plateau over the first minute or so.
+    let heat = 1.0 - (-t / 25.0).exp();
+    let load = if light { 0.6 } else { 1.0 };
+    let mut snap = crate::demo::frame(Duration::from_secs(2), Instant::now());
+    // Threads land on the Super cores first; `--light` leaves all but three
+    // Performance cores idle, so that cluster's clock wanders.
+    let loaded = |kind: ClusterKind, index: u16| !light || kind == ClusterKind::Super || index < 3;
+    let busy = |kind: ClusterKind, index: u16| {
+        let seed = f32::from(index);
+        if loaded(kind, index) {
+            0.96 + 0.04 * wobble(t * 2.0, seed)
+        } else {
+            0.04 + 0.08 * wobble(t, seed + 9.0)
+        }
+    };
+    let mhz = |kind: ClusterKind, max: u32| -> u32 {
+        let (settle, seed) = if kind == ClusterKind::Super {
+            (0.05, 1.0)
+        } else {
+            (0.035, 2.0)
+        };
+        let max = max as f32;
+        if light && kind != ClusterKind::Super {
+            return (max * (0.55 + 0.3 * wobble(t * 1.3, seed))) as u32;
+        }
+        let jitter = 0.006 * (wobble(t * 3.0, seed) - 0.5);
+        (max * (0.99 - settle * load * heat + jitter)) as u32
+    };
+    let cpu = &mut snap.cpu;
+    for cluster in &mut cpu.clusters {
+        let clock = mhz(cluster.kind, cluster.max_mhz);
+        let ratio = clock as f32 / cluster.max_mhz.max(1) as f32;
+        let mut sum = 0.0;
+        let mut n = 0_u16;
+        for core in cpu
+            .cores
+            .iter_mut()
+            .filter(|core| core.kind == cluster.kind)
+        {
+            core.active = busy(core.kind, core.index);
+            core.scaled = core.active * ratio;
+            core.freq_mhz = Some(clock);
+            sum += core.active;
+            n += 1;
+        }
+        cluster.active = sum / f32::from(n.max(1));
+        cluster.scaled = cluster.active * ratio;
+        cluster.freq_mhz = Some(clock);
+        for summary in [&mut cpu.e_cluster, &mut cpu.p_cluster, &mut cpu.s_cluster]
+            .into_iter()
+            .flatten()
+            .filter(|summary| summary.kind == cluster.kind)
+        {
+            summary.active = cluster.active;
+            summary.scaled = cluster.scaled;
+            summary.freq_mhz = clock;
+        }
+    }
+    let cores = cpu.cores.len().max(1) as f32;
+    cpu.active = cpu.cores.iter().map(|c| c.active).sum::<f32>() / cores;
+    cpu.scaled = cpu.cores.iter().map(|c| c.scaled).sum::<f32>() / cores;
+    cpu.freq_mhz = cpu.clusters.iter().filter_map(|c| c.freq_mhz).max();
+    let watts = load * (36.0 - 3.0 * heat) + 0.8 * wobble(t, 3.0);
+    let temp = 47.0 + load * 37.0 * heat + 1.5 * wobble(t, 5.0);
+    cpu.watts = Some(watts);
+    cpu.temp_c = Some(temp);
+    snap.sensors.cpu_c = Some(temp);
+    snap.sensors.p_c = Some(temp - 2.0);
+    snap.sensors.s_c = Some(temp + 1.0);
+    snap.sensors.hotspot_c = Some(temp + 3.0);
+    let warm = ((heat * load - 0.3) / 0.7).clamp(0.0, 1.0);
+    for fan in &mut snap.fans.fans {
+        fan.rpm = if warm <= 0.0 {
+            0
+        } else {
+            (1_200.0 + (f32::from(fan.max_rpm) * 0.7 - 1_200.0) * warm) as u16
+        };
+    }
+    snap.thermal = if heat * load > 0.8 {
+        Thermal::Fair
+    } else {
+        Thermal::Nominal
+    };
+    snap.power.cpu = Some(siltop_core::Reading::measured(watts));
+    snap
+}
+
 /// `--demo`: canned numbers, so nothing to load.
 struct NoLoad;
 
@@ -862,7 +1100,12 @@ pub fn command(cli: &Cli, live: bool, out: &mut dyn Write, err: &mut dyn Write) 
         duration: cli.duration.unwrap_or(DEFAULT_DURATION),
         threads: thread_count(logical, cli.bench_light),
     };
-    let mut sampler = crate::sampler(cli.demo, STEP)?;
+    // The demo plays a canned loaded run, not the dashboard's session.
+    let mut sampler: Box<dyn crate::worker::Tick> = if cli.demo {
+        Box::new(DemoRun::new(STEP, cli.bench_light))
+    } else {
+        crate::sampler(false, STEP)?
+    };
     let (tx, _rx) = std::sync::mpsc::channel();
     let shutdown = crate::signals::install(tx)?;
     let mut load: Box<dyn Load> = if cli.demo {
@@ -971,11 +1214,13 @@ mod tests {
                     name: String::from("P-cluster"),
                     mhz: p,
                     cores: 10,
+                    busy: 1.0,
                 },
                 ClusterClock {
                     name: String::from("E-cluster"),
                     mhz: e,
                     cores: 4,
+                    busy: 1.0,
                 },
             ],
             cpu_w: Some(w),
@@ -1020,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn sustained_is_the_last_third_and_drop_is_against_peak() {
+    fn sustained_is_the_last_third_and_drop_is_against_the_early_clock() {
         let report = analyze(
             &curve(|t| if t < 40.0 { 4500 } else { 4050 }),
             &meta(),
@@ -1073,8 +1318,136 @@ mod tests {
             &meta(),
             Stop::Completed,
         );
-        assert_eq!(report.clusters[0].baseline_mhz, 3900);
+        let p = &report.clusters[0];
+        assert_eq!(p.baseline_mhz, 3900);
+        assert_eq!(p.peak_mhz, 5000);
+        // Regression: the drop was taken from the boost spike (22%) and
+        // printed next to a pass.
+        assert!(p.drop_pct.abs() < f64::EPSILON, "{}", p.drop_pct);
         assert_eq!(report.verdict, Verdict::Pass);
+    }
+
+    /// Regression: a cluster whose sustained clock ended over 15% under its
+    /// early clock printed `drop 22%` beside `PASS`, because its dips never
+    /// ran two samples in a row. Such a card is now always THROTTLED.
+    #[test]
+    fn a_sustained_drop_over_the_limit_never_passes() {
+        let samples = curve(|t| {
+            if t < 20.0 || ((t * 2.0) as u32).is_multiple_of(2) {
+                4500
+            } else {
+                3000
+            }
+        });
+        let report = analyze(&samples, &meta(), Stop::Completed);
+        let p = &report.clusters[0];
+        assert!(p.drop_pct > DROP_LIMIT * 100.0, "{}", p.drop_pct);
+        assert_eq!(report.verdict, Verdict::Throttled);
+        assert_eq!(report.throttle_s, Some(20.5));
+        assert_eq!(
+            report.throttle_cause.as_deref(),
+            Some("P-cluster clock -17%")
+        );
+    }
+
+    /// The card agrees with itself for any curve: a pass has no loaded
+    /// cluster over the drop limit.
+    #[test]
+    fn a_pass_never_shows_a_judged_drop_over_the_limit() {
+        for low in (2000..=4500).step_by(250) {
+            for every in 1..=4_u32 {
+                let samples = curve(|t| {
+                    if t > 10.0 && ((t * 2.0) as u32).is_multiple_of(every) {
+                        low
+                    } else {
+                        4500
+                    }
+                });
+                let report = analyze(&samples, &meta(), Stop::Completed);
+                if report.verdict == Verdict::Pass {
+                    for c in report.clusters.iter().filter(|c| c.loaded) {
+                        assert!(c.drop_pct <= DROP_LIMIT * 100.0, "{low} {every}: {c:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Regression: with `--light` the idle cluster's wandering clock showed
+    /// as `drop 22.1%` beside `PASS`. It is labelled and never judged.
+    #[test]
+    fn a_cluster_the_load_never_reached_is_labelled_not_judged() {
+        let mut samples = curve(|_| 4500);
+        for (i, s) in samples.iter_mut().enumerate() {
+            let e = &mut s.clusters[1];
+            e.busy = 0.2;
+            e.mhz = if i < 40 { 2600 } else { 1400 };
+        }
+        let report = analyze(&samples, &meta(), Stop::Completed);
+        let e = &report.clusters[1];
+        assert!(!e.loaded);
+        assert_eq!(e.busy_pct, Some(20.0));
+        assert_eq!(report.verdict, Verdict::Pass);
+        let text = render_text(&report, None);
+        assert!(
+            text.contains(
+                "E-cluster   sustained 1400 MHz · peak 2600 MHz · only 20% busy, drop not judged"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("P-cluster   early 4500 → sustained 4500 MHz · drop 0.0%"),
+            "{text}"
+        );
+    }
+
+    /// Runs saved before `busy_pct` and `loaded` existed read as loaded.
+    #[test]
+    fn an_older_saved_cluster_reads_as_loaded() {
+        let old = r#"{"name":"super","peak_mhz":4500,"baseline_mhz":4400,"sustained_mhz":4300,"drop_pct":2.3}"#;
+        let c: ClusterResult = serde_json::from_str(old).unwrap();
+        assert!(c.loaded);
+        assert_eq!(c.busy_pct, None);
+    }
+
+    fn demo_samples(light: bool) -> Vec<Sample> {
+        use crate::worker::Tick as _;
+        let mut demo = DemoRun::new(STEP, light);
+        let _prime = demo.tick().unwrap();
+        (1..=120_u32)
+            .map(|i| Sample::from_snapshot(&demo.tick().unwrap(), STEP * i))
+            .collect()
+    }
+
+    /// Regression: `bench --demo` played the idle dashboard session, so its
+    /// card read `drop 75%` beside `PASS`. The canned run is a loaded one.
+    #[test]
+    fn the_demo_card_is_a_loaded_run_that_passes() {
+        let report = analyze(&demo_samples(false), &meta(), Stop::Completed);
+        assert_eq!(report.verdict, Verdict::Pass, "{report:?}");
+        assert_eq!(report.clusters.len(), 2);
+        for c in &report.clusters {
+            assert!(c.loaded, "{c:?}");
+            assert!(c.drop_pct < 6.0, "{c:?}");
+            assert!(
+                f64::from(c.baseline_mhz) > f64::from(c.peak_mhz) * 0.97,
+                "{c:?}"
+            );
+        }
+        assert!(
+            report
+                .peak_temp_c
+                .is_some_and(|t| (75.0..95.0).contains(&t))
+        );
+        assert!(report.fans.is_some_and(|f| f.ramp_s.is_some()));
+        let light = analyze(&demo_samples(true), &meta(), Stop::Completed);
+        assert_eq!(light.verdict, Verdict::Pass);
+        let loaded: Vec<(&str, bool)> = light
+            .clusters
+            .iter()
+            .map(|c| (c.name.as_str(), c.loaded))
+            .collect();
+        assert_eq!(loaded, [("performance", false), ("super", true)]);
     }
 
     #[test]
@@ -1176,11 +1549,45 @@ mod tests {
         assert!(render_text(&report, None).contains("1500 rpm → 1500 rpm, never ramped"));
     }
 
+    /// Regression: Esc after 3 s printed "stopped early" and then
+    /// "PASS: no throttling". A cut-short run gives no verdict, in the text
+    /// and in `--json`; a throttle seen before the stop still stands.
+    #[test]
+    fn a_run_stopped_early_has_no_verdict() {
+        let samples: Vec<Sample> = curve(|_| 4500).into_iter().take(6).collect();
+        for stop in [Stop::Cancelled, Stop::TooHot { celsius: 105.0 }] {
+            let report = analyze(&samples, &meta(), stop);
+            assert_eq!(report.verdict, Verdict::Incomplete);
+            assert_eq!(
+                verdict_line(&report),
+                "incomplete: stopped after 00:03, no verdict"
+            );
+            let json: serde_json::Value =
+                serde_json::from_str(&render_json(&report, None).unwrap()).unwrap();
+            assert_eq!(json["verdict"], "incomplete");
+            assert!(!render_text(&report, None).contains("PASS"));
+        }
+        let mut hot = curve(|_| 4500);
+        hot[20].thermal = Thermal::Serious;
+        let report = analyze(&hot[..30], &meta(), Stop::Cancelled);
+        assert_eq!(report.verdict, Verdict::Throttled);
+    }
+
+    /// The demo's live page and card are loaded from the very first sample.
+    #[test]
+    fn the_demo_is_loaded_from_its_first_sample() {
+        let first = Sample::from_snapshot(&demo_frame(STEP, false), STEP);
+        for c in &first.clusters {
+            assert!(c.busy > 0.9 && c.mhz > 3900, "{c:?}");
+        }
+        assert!(first.cpu_w.is_some_and(|w| w > 30.0), "{first:?}");
+    }
+
     #[test]
     fn empty_run_reports_without_panicking() {
         let report = analyze(&[], &meta(), Stop::Cancelled);
         assert!(report.clusters.is_empty());
-        assert_eq!(report.verdict, Verdict::Pass);
+        assert_eq!(report.verdict, Verdict::Incomplete);
         assert!(report.ran_s.abs() < f64::EPSILON);
         assert!(render_text(&report, None).contains("stopped     early, by Esc or Ctrl-C"));
     }
@@ -1335,6 +1742,8 @@ mod tests {
             "baseline_mhz",
             "sustained_mhz",
             "drop_pct",
+            "busy_pct",
+            "loaded",
         ] {
             assert!(cluster.contains_key(key), "{key}");
         }
@@ -1362,8 +1771,8 @@ mod tests {
         let text = render_text(&report, Some(&cmp));
         for needle in [
             "siltop bench  Apple M4 Pro · 14 threads · 01:00 of 01:00",
-            "P-cluster   peak 4500 MHz",
-            "peak temp   90°",
+            "P-cluster   early 4500 → sustained 3600 MHz · drop 20.0% · peak 4500 MHz",
+            "peak temp   90°C",
             "CPU power   avg 30W",
             "fans        2000 rpm → 2000 rpm, never ramped",
             "verdict     THROTTLED at 00:43",
@@ -1627,8 +2036,8 @@ mod tests {
         );
         let report = analyze(&[sample], &meta(), Stop::Completed);
         let text = render_text(&report, None);
-        assert!(text.contains("  performance 1 peak 4002 MHz"), "{text}");
-        assert!(text.contains("  super         peak 4000 MHz"), "{text}");
+        assert!(text.contains("  performance 1 early 4002 →"), "{text}");
+        assert!(text.contains("  super         early 4000 →"), "{text}");
         assert!(text.contains("  verdict       PASS"), "{text}");
         for raw in ["MCPU", "PCPU"] {
             assert!(!text.contains(raw), "{raw} in\n{text}");

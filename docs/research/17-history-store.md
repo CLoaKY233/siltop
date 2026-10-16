@@ -158,6 +158,16 @@ main loop in `App::record`.
   for any app that stayed in its buckets' top 8, prints an `other` row, and
   falls back to the top-5 lists for v1 buckets. System energy comes from the
   input rail (`SysPowerW`) when present.
+- The app a process counts toward is the dashboard's "group helpers by app"
+  rule (`bucket::app_name`): the outermost `.app` in its executable path, so
+  `Brave Browser Helper (Renderer)` adds to `Brave Browser`. Folding happens
+  before the name meets the record's 16-byte field, so the report shows whole
+  app names instead of `Brave Browser He` beside `Brave Browser`. Buckets
+  written before this keep their per-helper names; merging is by name, so
+  old and new rows simply sit side by side. The top-5 lists stay per pid,
+  so their names (and the CSV's `top_*` cells) are still cut at 16 bytes:
+  carrying longer names needs a record version bump (a wider name field,
+  or a string table per segment), with a decoder for every older layout.
 
 ## Battery and thermal state (wave 6, store v2)
 

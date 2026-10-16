@@ -277,7 +277,7 @@ def measure_once(opts, probe, run_index):
     argv = [opts.bin] + shlex.split(opts.args)
     cols, rows = opts.size
     spawned = time.monotonic()
-    pid, fd = ptyterm.spawn(argv, cols, rows, ptyterm.child_env(xdg))
+    pid, fd = ptyterm.spawn(argv, cols, rows, ptyterm.child_env(xdg, onboarding=False))
     responder = None if opts.no_respond else ptyterm.Responder()
     frames = ptyterm.FrameSplitter()
     counts = {"bytes": [], "first_output": None}

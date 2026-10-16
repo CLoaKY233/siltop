@@ -549,15 +549,16 @@ pub enum Step {
 }
 
 impl View {
-    /// Arrows / hjkl move between cards (`cols` per row), Enter opens a host's
-    /// processes, Esc closes them, q quits.
+    /// Arrows / hjkl move between cards (`cols` per row; Up/Down stay in
+    /// their column and do nothing past the grid's edge), Enter opens a
+    /// host's processes, Esc closes them (and is a no-op on the grid), q
+    /// quits.
     pub fn key(&mut self, code: KeyCode, ctrl: bool, hosts: usize, cols: usize) -> Step {
         let last = hosts.saturating_sub(1);
         let cols = cols.max(1);
         match code {
             KeyCode::Char('q') => return Step::Quit,
             KeyCode::Char('c') if ctrl => return Step::Quit,
-            KeyCode::Esc if !self.procs_open => return Step::Quit,
             KeyCode::Esc | KeyCode::Backspace => self.procs_open = false,
             KeyCode::Enter => self.procs_open = !self.procs_open,
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
@@ -566,16 +567,26 @@ impl View {
             KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => {
                 self.selected = self.selected.saturating_sub(1);
             }
-            KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + cols).min(last),
-            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(cols),
+            KeyCode::Down | KeyCode::Char('j') if self.selected + cols <= last => {
+                self.selected += cols;
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.selected >= cols => self.selected -= cols,
             _ => {}
         }
         Step::Stay
     }
 }
 
-/// The local Mac's card name: its short hostname, else "this Mac".
-fn local_name() -> String {
+/// The local card's name under `--demo`: the data is canned, so the real
+/// hostname never appears beside it.
+const DEMO_LOCAL_NAME: &str = "this-mac";
+
+/// The local Mac's card name: its short hostname, else "this Mac"; a fixed
+/// stand-in under `--demo`.
+fn local_name(demo: bool) -> String {
+    if demo {
+        return String::from(DEMO_LOCAL_NAME);
+    }
     Command::new("hostname")
         .arg("-s")
         .output()
@@ -621,7 +632,7 @@ pub fn run(cli: &Cli) -> Result<()> {
     let interval = config.interval;
     let now = Instant::now();
     let mut fleet = Fleet::new(Launcher::default(), interval);
-    sampler_host(&mut fleet, local_name(), cli.demo, interval)?;
+    sampler_host(&mut fleet, local_name(cli.demo), cli.demo, interval)?;
     for (host, profile) in cli.hosts.iter().zip(crate::demo::FLEET.iter().cycle()) {
         if cli.demo {
             // A canned Mac per name: the grid without any ssh.
@@ -966,7 +977,7 @@ mod tests {
         view.key(KeyCode::Down, false, 4, 2);
         assert_eq!(view.selected, 3);
         view.key(KeyCode::Down, false, 4, 2);
-        assert_eq!(view.selected, 3, "clamped to the last host");
+        assert_eq!(view.selected, 3, "no row below: stays put");
         view.key(KeyCode::Enter, false, 4, 2);
         assert!(view.procs_open);
         assert_eq!(
@@ -975,8 +986,42 @@ mod tests {
             "esc closes procs first"
         );
         assert!(!view.procs_open);
-        assert_eq!(view.key(KeyCode::Esc, false, 4, 2), Step::Quit);
+        assert_eq!(
+            view.key(KeyCode::Esc, false, 4, 2),
+            Step::Stay,
+            "esc on the grid does not quit"
+        );
+        assert_eq!(view.key(KeyCode::Char('q'), false, 4, 2), Step::Quit);
         assert_eq!(view.key(KeyCode::Char('c'), true, 4, 2), Step::Quit);
+    }
+
+    /// Regression: in a one-row grid Up/Down jumped to the first or last
+    /// card; they stay in their column instead.
+    #[test]
+    fn up_down_in_a_single_row_stay_put() {
+        let mut view = View::default();
+        view.key(KeyCode::Right, false, 4, 4);
+        assert_eq!(view.selected, 1);
+        for code in [
+            KeyCode::Down,
+            KeyCode::Char('j'),
+            KeyCode::Up,
+            KeyCode::Char('k'),
+        ] {
+            view.key(code, false, 4, 4);
+            assert_eq!(view.selected, 1, "{code:?}");
+        }
+        let mut view = View::default();
+        view.key(KeyCode::Down, false, 3, 2);
+        assert_eq!(view.selected, 2, "down a column");
+        view.key(KeyCode::Up, false, 3, 2);
+        assert_eq!(view.selected, 0, "and back up");
+    }
+
+    /// Privacy: the demo's local card never carries this Mac's hostname.
+    #[test]
+    fn demo_local_card_is_not_named_after_this_mac() {
+        assert_eq!(local_name(true), DEMO_LOCAL_NAME);
     }
 
     #[test]

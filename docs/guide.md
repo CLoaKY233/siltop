@@ -14,6 +14,7 @@ window is wide enough for it (about 140 columns); a narrower footer always keeps
 siltop         # the dashboard
 siltop --demo  # a canned 60 s session: try it without load, or on another Mac
 siltop --help  # every option, grouped, with examples
+siltop help bench  # one command's usage and options; same as siltop bench --help
 ```
 
 On the very first launch in a terminal, siltop shows three short screens: what it is,
@@ -169,6 +170,7 @@ The table below is generated from `crates/siltop/src/keymap.rs` (a test fails if
 | `p` | general | pause / resume |
 | `[` `-` | general | sample slower |
 | `]` `+` `=` | general | sample faster |
+| `U` | general | check for updates |
 | `?` | general | help |
 | `m` | general | main menu |
 | `H` | general | timeline (history) |
@@ -321,7 +323,12 @@ The agent is a normal LaunchAgent: no sudo, nothing outside your home folder.
 `siltop line` prints one status line and exits, for tmux, SketchyBar or Starship.
 `--format` takes a template of `{cpu} {gpu} {mem} {power} {temp} {swap} {thermal} {verdict}
 {alerts}` (a reading this Mac cannot measure disappears rather than reading 0), and
-`--style tmux` or `--style ansi` adds colour. With the agent running it costs nothing.
+`--style tmux` or `--style ansi` adds colour. Each reading takes its resource's colour from
+your theme (cpu green, memory blue and so on in Billabong), and turns the theme's warning or
+critical colour when it runs hot or busy; `SILTOP_THEME` picks the theme here as it does
+for the dashboard. With `NO_COLOR` set (to anything but empty) or `TERM=dumb`, `--style
+ansi` prints plain text; `--style tmux` keeps its markup but leaves colour out under
+`NO_COLOR`. With the agent running it costs nothing.
 
 ```sh
 set -g status-right '#(siltop line --style tmux)'   # in ~/.tmux.conf
@@ -355,14 +362,29 @@ siltop bench --json         # the report card as one JSON object
 `bench` spins one busy thread per logical core (half with `--light`) and samples every
 500 ms through the same sampler as the dashboard. On a terminal it shows a small live page
 with the clock, temperature and CPU power graphs and a countdown; Esc, `q` or Ctrl-C stops
-early and still reports. The report card lists each cluster's peak and sustained clock (the
-median of the last third of the run) and how far it dropped, the peak temperature, average
-CPU power and efficiency in MHz per watt, how the fans responded, and a verdict:
+early and still reports. The report card lists each cluster's early clock (the median of the
+first 5 s under load), its sustained clock (the median of the last third of the run), how
+far sustained dropped under early, and its single fastest reading as `peak`. The drop is
+measured from the early clock, not the peak, so one boost reading never counts as a drop.
+Then the peak temperature (`84°C`), average CPU power and efficiency in MHz per watt, how
+the fans responded, and a verdict:
 
 - **PASS: no throttling**, or
 - **THROTTLED at mm:ss**, the first moment macOS reported a serious thermal state or a
-  cluster held more than 15% under its median clock of the first 5 s for two samples in a
-  row (one slow reading is noise).
+  cluster held more than 15% under its early clock for two samples in a row (one slow
+  reading is noise). A cluster whose sustained clock ended more than 15% under its early
+  clock is THROTTLED too, at its first low reading, even if its dips never ran two in a
+  row: a drop over 15% never sits beside a PASS.
+- **incomplete: stopped after mm:ss, no verdict** when Esc, Ctrl-C or the 105 °C safety stop
+  ended the run before any throttle (`"verdict": "incomplete"` in `--json`): a cut-short
+  run is too short to pass. A throttle seen before the stop still reads THROTTLED.
+
+A cluster the load never reached, busy less than half the time (with `--light` the
+threads land on the fastest cores and most of the others idle), is shown as `only 31% busy,
+drop not judged`: an idle cluster picks its own clock, so its drop says nothing about heat.
+In `--json` each cluster carries `peak_mhz`, `baseline_mhz` (the early clock),
+`sustained_mhz`, `drop_pct` (sustained under baseline, never negative), `busy_pct` and
+`loaded`.
 
 Readings a Mac does not have are left out: a fanless Air has no fans row, and a Mac without
 a CPU power rail has no power or efficiency row. The run stops at once if any temperature
@@ -371,7 +393,8 @@ reaches 105 °C, and the load threads are always stopped before the report print
 Each run is saved next to your history (`~/.local/state/siltop/bench.ndjson`) and
 compared with your last full run of the same kind on the same chip: "clocks 3% lower than
 your last run on 2026-09-20". Close heavy apps first for a fair comparison.
-`siltop bench --demo` plays canned numbers without loading the CPU or saving anything.
+`siltop bench --demo` plays a canned loaded run (clocks near the top that settle a few
+percent as the chip warms, then a pass) without loading the CPU or saving anything.
 
 ## Fleet: several Macs at once
 
@@ -448,9 +471,15 @@ siltop update                 # check GitHub for a newer release, and say how to
 siltop update --check         # exit 10 when a newer version is available
 siltop update --yes           # install a downloaded (non-Homebrew) update without asking
 siltop update --rollback      # restore <name>.old beside this copy
-siltop feedback --bug --copy  # open a prefilled GitHub issue; doctor output on the clipboard
+siltop feedback --bug --copy  # a prefilled bug-report link; doctor output on the clipboard
 siltop reset --yes            # delete config, state and history
 ```
+
+`siltop feedback` prints a link to a new GitHub issue, prefilled with only the siltop
+version, the chip, the macOS build and how siltop was installed, and opens it in your
+browser (not over ssh, where it only prints it). `--bug` picks the bug-report form instead
+of the feature request. `--copy` puts `siltop doctor` output on the clipboard and only
+prints the link, without opening a browser, so you can open it and paste.
 
 Who can update itself depends on how siltop was installed:
 
@@ -482,7 +511,7 @@ history gone, and `siltop agent uninstall` if you installed the background agent
   User-Agent `siltop/<version>`. `siltop update` does the same when you ask.
   `siltop serve` listens on 127.0.0.1 unless you pass another `--addr`.
   `fleet` reaches other Macs only through the `ssh` you run yourself.
-- **No telemetry.** Nothing about you or this Mac is collected or sent. A crash file stays on disk until you send it yourself with `siltop feedback --bug`.
+- **No telemetry.** Nothing about you or this Mac is collected or sent. A crash file stays on disk; nothing sends it. You can attach it to a GitHub issue yourself.
 - **No sudo.** Every reading comes from APIs a normal user may call.
 - **It writes only its own files**, and only these:
   - in `~/.config/siltop/`: `config.toml` on first launch and when you change a setting

@@ -17,6 +17,7 @@ use crate::chips::{self, Chip};
 use crate::chrome::{paint_rows, push_kv, push_token};
 use crate::theme::Theme;
 use crate::titles::ghz_display;
+use unicode_width::UnicodeWidthStr;
 
 /// Narrowest card that still fits `cpu 100%  P 4.5G · E 2.9G`.
 pub(crate) const CARD_MIN_WIDTH: u16 = 34;
@@ -123,13 +124,28 @@ pub fn fleet_hit(area: Rect, n: usize, x: u16, y: u16) -> Option<usize> {
 }
 
 /// The key chips on the bottom row, plus an optional note on its right.
-fn render_footer(frame: &mut Frame, area: Rect, chips: &[Chip], note: Option<&str>, theme: &Theme) {
+fn render_footer(
+    frame: &mut Frame,
+    area: Rect,
+    chips: &[Chip],
+    note: Option<(&str, &str)>,
+    theme: &Theme,
+) {
     if area.height == 0 {
         return;
     }
     let row = Rect::new(area.x, area.bottom() - 1, area.width, 1);
     let placed = chips::place(chips, row, row.x);
     frame.render_widget(chips::line(&placed, row.x, theme), row);
+    // The note takes only the room right of the chips, with a gap: the
+    // short form when the long one would run into them, else nothing.
+    let used = placed.last().map_or(row.x, |(r, _)| r.right());
+    let room = usize::from(row.right().saturating_sub(used));
+    let note = note.and_then(|(long, short)| {
+        [long, short]
+            .into_iter()
+            .find(|text| text.width() + 3 <= room)
+    });
     if let Some(note) = note {
         let note = Line::from(Span::styled(format!("{note} "), theme.dim())).right_aligned();
         frame.render_widget(note, row);
@@ -149,8 +165,16 @@ pub fn render_fleet(
         render_card(frame, *rect, card, i == selected, theme);
     }
     let hidden = cards.len().saturating_sub(rects.len());
-    let note = (hidden > 0).then(|| format!("+{hidden} more: widen the terminal"));
-    render_footer(frame, area, &chips::FLEET_GRID, note.as_deref(), theme);
+    let note = (hidden > 0).then(|| {
+        (
+            format!("+{hidden} more: widen the terminal"),
+            format!("+{hidden} more"),
+        )
+    });
+    let note = note
+        .as_ref()
+        .map(|(long, short)| (long.as_str(), short.as_str()));
+    render_footer(frame, area, &chips::FLEET_GRID, note, theme);
     // Host, chip and process names come from other Macs: scrub last.
     crate::chrome::scrub_controls(frame.buffer_mut());
     theme.finish(frame.buffer_mut());

@@ -207,11 +207,38 @@ fn print_config(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
         Err(message) => return report(err, &message),
     };
     warn_all(err, &file.warnings);
-    match config_text(&with_cli_overrides(file.config, cli), cli)
+    let config = with_cli_overrides(file.config, cli);
+    warn_unknown_theme(&config, &|key| std::env::var(key).ok(), err);
+    let written = config_text(&config, cli)
         .and_then(|text| out.write_all(text.as_bytes()))
-    {
-        Ok(()) => 0,
-        Err(e) => report(err, &e.to_string()),
+        .and_then(|()| out.flush());
+    finish(written.map_err(Into::into), err)
+}
+
+/// The theme a headless command paints with names nothing: say so once on
+/// stderr. `SILTOP_THEME` wins over the file, as in the dashboard (which
+/// says it on its own screen instead).
+fn unknown_theme(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let (name, from) = match env("SILTOP_THEME").filter(|v| !v.trim().is_empty()) {
+        Some(name) => (name, "SILTOP_THEME"),
+        None => (config.theme.clone(), "theme"),
+    };
+    let name = name.trim();
+    let known = name.is_empty()
+        || name.eq_ignore_ascii_case(siltop_ui::Theme::AUTO)
+        || siltop_ui::Theme::by_name(name).is_some();
+    (!known).then(|| {
+        format!(
+            "{from} {:?} is not a theme; using auto (themes: {})",
+            siltop_core::printable(name),
+            siltop_ui::Theme::catalog().join(", ")
+        )
+    })
+}
+
+fn warn_unknown_theme(config: &Config, env: &dyn Fn(&str) -> Option<String>, err: &mut dyn Write) {
+    if let Some(warning) = unknown_theme(config, env) {
+        let _ = writeln!(err, "siltop: {warning}");
     }
 }
 
@@ -266,6 +293,23 @@ fn report(err: &mut dyn Write, message: &str) -> u8 {
     EXIT_ERROR
 }
 
+/// Whether `error` is a closed stdout: the reader went away (`| head`,
+/// `| true`). That ends a command normally, not with an error.
+pub(crate) fn closed_pipe(error: &siltop_core::Error) -> bool {
+    matches!(error, siltop_core::Error::Io(e) if e.kind() == io::ErrorKind::BrokenPipe)
+}
+
+/// A command's exit status: 0 when it ran, or when its reader went away
+/// ([`closed_pipe`], silently); else the error in one line and 1. Every
+/// command ends through here, so none prints "Broken pipe".
+fn finish(result: siltop_core::Result<()>, err: &mut dyn Write) -> u8 {
+    match result {
+        Ok(()) => 0,
+        Err(error) if closed_pipe(&error) => 0,
+        Err(error) => report(err, &error.to_string()),
+    }
+}
+
 /// Runs one parsed command line.
 fn dispatch(
     parsed: Result<Cli, CliError>,
@@ -288,7 +332,7 @@ fn dispatch(
         return report(err, &message);
     }
     let written = match cli.mode {
-        Mode::Help => out.write_all(cli::usage().as_bytes()),
+        Mode::Help => out.write_all(cli::help_text(cli.help_command).as_bytes()),
         Mode::Version if cli.version_json => {
             let rows = if cli.verbose {
                 about_rows(&cli)
@@ -314,20 +358,12 @@ fn dispatch(
         Mode::Report(span) => {
             let root = store_disk::default_root();
             let now = store_disk::unix_now();
-            return match report::run(span, cli.report_json, root.as_deref(), now, out) {
-                Ok(()) => 0,
-                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => 0,
-                Err(error) => report(err, &error.to_string()),
-            };
+            let result = report::run(span, cli.report_json, root.as_deref(), now, out);
+            return finish(result.map_err(Into::into), err);
         }
         Mode::Agent(action) => return agent_command(&cli, action, out, err),
         Mode::Line => return line_command(&cli, out, err),
-        Mode::Doctor => {
-            return match doctor::run(out) {
-                Ok(()) => 0,
-                Err(error) => report(err, &error.to_string()),
-            };
-        }
+        Mode::Doctor => return finish(doctor::run(out), err),
         Mode::Record | Mode::Serve | Mode::Export => return capture_command(&cli, out, err),
         Mode::Onboarding | Mode::Update(_) | Mode::Feedback | Mode::Reset => {
             return consent_command(&cli, out, err);
@@ -346,11 +382,7 @@ fn dispatch(
         }
         Mode::Tui | Mode::Replay => return dashboard(&cli, tty, dumb_term(), err),
     };
-    match written.and_then(|()| out.flush()) {
-        Ok(()) => 0,
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => 0,
-        Err(error) => report(err, &error.to_string()),
-    }
+    finish(written.and_then(|()| out.flush()).map_err(Into::into), err)
 }
 
 /// `TERM=dumb`: a terminal that cannot move the cursor or draw colour, such
@@ -409,6 +441,27 @@ fn line_theme(name: &str) -> siltop_ui::Theme {
     siltop_ui::Theme::by_name(name).unwrap_or_default()
 }
 
+/// The theme name `line` paints with: `SILTOP_THEME` over the config (and
+/// `--theme`), as in the dashboard.
+fn line_theme_name(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> String {
+    env("SILTOP_THEME")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| config.theme.clone())
+}
+
+/// `line`'s style after the environment: `NO_COLOR` (any non-empty value)
+/// and `TERM=dumb` turn ANSI colour into plain text; tmux markup stays,
+/// without its colours, under `NO_COLOR`.
+fn line_style(style: line::Style, env: &dyn Fn(&str) -> Option<String>) -> (line::Style, bool) {
+    let no_color = env("NO_COLOR").is_some_and(|value| !value.is_empty());
+    let dumb = env("TERM").is_some_and(|term| term == "dumb");
+    match style {
+        line::Style::Ansi if no_color || dumb => (line::Style::Plain, false),
+        line::Style::Tmux if no_color => (line::Style::Tmux, false),
+        other => (other, true),
+    }
+}
+
 fn agent_command(
     cli: &Cli,
     action: cli::AgentAction,
@@ -433,12 +486,20 @@ fn agent_command(
         }
         snap
     };
-    let never = || false; // launchd's SIGTERM ends the process
-    let mut pacer = worker::Pacer::new(&never);
+    // launchd sends SIGTERM on unload and at logout: end the loop, so the
+    // open history bucket is written, and exit 0.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let shutdown = match signals::install(tx) {
+        Ok(shutdown) => shutdown,
+        Err(error) => return report(err, &error.to_string()),
+    };
+    let stop = || shutdown.requested();
+    let mut pacer = worker::Pacer::new(&stop);
     let mut wait = |period| pacer.wait(period);
     match agent::run_loop(
         &mut tick,
         &mut wait,
+        &stop,
         &config,
         store_disk::default_root().as_deref(),
         state.as_deref(),
@@ -455,7 +516,16 @@ const LINE_SAMPLE: std::time::Duration = std::time::Duration::from_millis(250);
 
 fn line_command(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
     let config = cli_config(cli);
-    let palette = line::Palette::from_theme(&line_theme(&config.theme));
+    let env = |key: &str| std::env::var(key).ok();
+    let (style, colour) = line_style(cli.line_style, &env);
+    if style != line::Style::Plain {
+        warn_unknown_theme(&config, &env, err);
+    }
+    let palette = if colour {
+        line::Palette::from_theme(&line_theme(&line_theme_name(&config, &env)))
+    } else {
+        line::Palette::none()
+    };
     let format = cli.line_format.as_deref().unwrap_or(line::DEFAULT_FORMAT);
     // The demo never reads the real agent's file: its numbers are canned.
     let state = line::state_path().filter(|_| !cli.demo);
@@ -474,16 +544,13 @@ fn line_command(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
     let result = line::run(
         out,
         format,
-        cli.line_style,
+        style,
         &palette,
         state.as_deref(),
         headless::unix_ms_now(),
         sample,
     );
-    match result {
-        Ok(()) => 0,
-        Err(error) => report(err, &error.to_string()),
-    }
+    finish(result, err)
 }
 
 /// `record`, `serve` and `export`.
@@ -493,21 +560,16 @@ fn capture_command(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
         Mode::Serve => run_serve(cli, err),
         _ => run_export(cli, out),
     };
-    match result {
-        Ok(()) => 0,
-        Err(error) => report(err, &error.to_string()),
-    }
+    finish(result, err)
 }
 
 /// `bench`: the live page only on a terminal.
 fn bench_command(cli: &Cli, live: bool, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
-    match bench::command(cli, live, out, err) {
-        Ok(()) => 0,
-        Err(error) => {
-            tui::restore_best_effort();
-            report(err, &error.to_string())
-        }
+    let result = bench::command(cli, live, out, err);
+    if result.is_err() {
+        tui::restore_best_effort();
     }
+    finish(result, err)
 }
 
 fn run_record(cli: &Cli, out: &mut dyn Write) -> siltop_core::Result<()> {
@@ -539,11 +601,8 @@ fn run_serve(cli: &Cli, err: &mut dyn Write) -> siltop_core::Result<()> {
     let addr = cli
         .addr
         .map_or_else(|| cli::SERVE_ADDR.to_owned(), |a| a.to_string());
-    let listener = std::net::TcpListener::bind(&addr)
-        .map_err(|e| siltop_core::Error::system(format!("listen on {addr}: {e}")))?;
-    let bound = listener
-        .local_addr()
-        .map_err(|e| siltop_core::Error::system(format!("listen on {addr}: {e}")))?;
+    let listener = std::net::TcpListener::bind(&addr).map_err(|e| listen_error(&addr, &e))?;
+    let bound = listener.local_addr().map_err(|e| listen_error(&addr, &e))?;
     let (tx, rx) = std::sync::mpsc::channel();
     let shutdown = signals::install(tx.clone())?;
     let (demo, step) = (cli.demo, cli.headless_interval());
@@ -566,6 +625,19 @@ fn run_serve(cli: &Cli, err: &mut dyn Write) -> siltop_core::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Why `serve` could not listen, in the CLI's own words.
+fn listen_error(addr: &str, error: &io::Error) -> siltop_core::Error {
+    let message = match error.kind() {
+        io::ErrorKind::AddrInUse => format!("{addr} is already in use; pass --addr"),
+        io::ErrorKind::AddrNotAvailable => {
+            format!("{addr} is not an address of this Mac; pass --addr")
+        }
+        io::ErrorKind::PermissionDenied => format!("{addr}: permission denied"),
+        _ => format!("cannot listen on {addr}: {}", io_reason(error)),
+    };
+    io::Error::new(error.kind(), message).into()
 }
 
 fn run_export(cli: &Cli, out: &mut dyn Write) -> siltop_core::Result<()> {
@@ -607,10 +679,7 @@ fn headless(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
         Mode::Diagnose => headless::run_diagnose(&mut tick, &mut wait, out, cli),
         _ => headless::run_json(&mut tick, &mut wait, out, cli, cli.mode == Mode::JsonStream),
     };
-    match result {
-        Ok(()) => 0,
-        Err(error) => report(err, &error.to_string()),
-    }
+    finish(result, err)
 }
 
 #[cfg(test)]
@@ -763,14 +832,211 @@ mod tests {
         assert!(!out.contains('\x1b'));
     }
 
+    /// Regression: with the default theme `line --style ansi` printed the
+    /// plain line, because calm readings took the terminal's own colour.
     #[test]
-    fn demo_line_ansi_keeps_calm_readings_in_the_terminal_colour() {
-        // The default theme's foreground is the terminal's own; only warn and
-        // crit readings get painted, and the demo Mac is calm.
+    fn demo_line_ansi_paints_calm_readings() {
         let (code, ansi, _) = run(&["--demo", "line", "--style", "ansi"], NO_TTY);
         let (_, plain, _) = run(&["--demo", "line"], NO_TTY);
         assert_eq!(code, 0);
-        assert_eq!(ansi, plain);
+        // The test process's own NO_COLOR or TERM=dumb would rightly turn
+        // the colour off.
+        let env = |key: &str| std::env::var(key).ok();
+        if line_style(line::Style::Ansi, &env).1 {
+            assert!(ansi.contains("\x1b[38;2;"), "{ansi:?}");
+            let stripped = ansi.replace("\x1b[39m", "");
+            let stripped: String = stripped
+                .split("\x1b[38;2;")
+                .enumerate()
+                .map(|(i, part)| {
+                    if i == 0 {
+                        part
+                    } else {
+                        part.split_once('m').map_or(part, |(_, rest)| rest)
+                    }
+                })
+                .collect();
+            assert_eq!(stripped, plain);
+        } else {
+            assert_eq!(ansi, plain);
+        }
+    }
+
+    fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    }
+
+    #[test]
+    fn no_color_and_a_dumb_terminal_turn_line_colour_off() {
+        use line::Style::{Ansi, Plain, Tmux};
+        for (pairs, style, want) in [
+            (&[][..], Ansi, (Ansi, true)),
+            (&[("NO_COLOR", "1")], Ansi, (Plain, false)),
+            (&[("NO_COLOR", "")], Ansi, (Ansi, true)),
+            (&[("TERM", "dumb")], Ansi, (Plain, false)),
+            (&[("NO_COLOR", "1")], Tmux, (Tmux, false)),
+            (&[("TERM", "dumb")], Tmux, (Tmux, true)),
+            (&[("NO_COLOR", "1")], Plain, (Plain, true)),
+        ] {
+            assert_eq!(
+                line_style(style, &env_of(pairs)),
+                want,
+                "{pairs:?} {style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn line_honours_siltop_theme_over_the_config() {
+        let config = Config {
+            theme: String::from("nord"),
+            ..Config::default()
+        };
+        assert_eq!(line_theme_name(&config, &env_of(&[])), "nord");
+        let env = env_of(&[("SILTOP_THEME", "dracula")]);
+        assert_eq!(line_theme_name(&config, &env), "dracula");
+        assert_eq!(
+            line_theme_name(&config, &env_of(&[("SILTOP_THEME", " ")])),
+            "nord"
+        );
+    }
+
+    #[test]
+    fn an_unknown_theme_is_named_once_with_every_choice() {
+        let mut config = Config {
+            theme: String::from("neon"),
+            ..Config::default()
+        };
+        let warning = unknown_theme(&config, &env_of(&[])).unwrap();
+        assert!(
+            warning.starts_with("theme \"neon\" is not a theme"),
+            "{warning}"
+        );
+        for name in ["auto", "billabong", "dracula", "rose-pine"] {
+            assert!(warning.contains(name), "{name}: {warning}");
+        }
+        let env = env_of(&[("SILTOP_THEME", "glow")]);
+        assert!(
+            unknown_theme(&config, &env)
+                .unwrap()
+                .starts_with("SILTOP_THEME \"glow\"")
+        );
+        config.theme = String::from("Dracula");
+        assert_eq!(unknown_theme(&config, &env_of(&[])), None);
+        config.theme = String::from("auto");
+        assert_eq!(
+            unknown_theme(&config, &env_of(&[("SILTOP_THEME", "nord")])),
+            None
+        );
+    }
+
+    /// Regression: a closed stdout (`| true`) printed "siltop: Broken pipe
+    /// (os error 32)" and exited 1 from --print-config, record, bench and
+    /// feedback.
+    #[test]
+    fn a_reader_that_went_away_is_a_normal_end() {
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        let dir = config_io::tests::TempDir::new("main-closed-pipe");
+        let trace = dir.0.join("t.ptrace");
+        let trace_arg = trace.to_string_lossy().into_owned();
+        for args in [
+            &["--print-config"][..],
+            &["man"],
+            &["--help"],
+            &["--demo", "--json"],
+            &["--demo", "line"],
+            &[
+                "--demo",
+                "record",
+                "-i",
+                "100",
+                "--duration",
+                "1s",
+                "--out",
+                &trace_arg,
+            ],
+            &["bench", "--demo", "--duration", "1s"],
+        ] {
+            let mut err = Vec::new();
+            let parsed = cli::parse(args.iter().copied()).map(|mut cli| {
+                cli.config.get_or_insert_with(empty_config);
+                cli
+            });
+            let code = dispatch(parsed, NO_TTY, &mut Closed, &mut err);
+            let err = String::from_utf8(err).unwrap();
+            assert_eq!(code, 0, "{args:?}: {err}");
+            assert!(
+                !err.contains("Broken pipe") && !err.contains("os error"),
+                "{args:?}: {err}"
+            );
+        }
+        let other = siltop_core::Error::from(io::Error::other("disk full"));
+        let mut err = Vec::new();
+        assert_eq!(finish(Err(other), &mut err), EXIT_ERROR);
+    }
+
+    /// Regression: record into a missing folder or over a file printed
+    /// "system: …: No such file or directory (os error 2)".
+    #[test]
+    fn record_says_what_is_wrong_with_out_in_plain_words() {
+        let dir = config_io::tests::TempDir::new("main-record-out");
+        let taken = dir.0.join("taken.ptrace");
+        std::fs::write(&taken, "x").unwrap();
+        let missing = dir.0.join("nope").join("t.ptrace");
+        for (path, want) in [
+            (
+                &missing,
+                format!("siltop: no such folder: {}\n", dir.0.join("nope").display()),
+            ),
+            (
+                &taken,
+                format!(
+                    "siltop: {} already exists; pass a different --out\n",
+                    taken.display()
+                ),
+            ),
+        ] {
+            let path_arg = path.to_string_lossy().into_owned();
+            let (code, out, err) = run(
+                &["--demo", "record", "--duration", "1s", "--out", &path_arg],
+                NO_TTY,
+            );
+            assert_eq!(code, EXIT_ERROR);
+            assert!(out.is_empty());
+            assert_eq!(err, want);
+        }
+    }
+
+    #[test]
+    fn listen_errors_are_plain_one_liners() {
+        let busy = io::Error::from(io::ErrorKind::AddrInUse);
+        assert_eq!(
+            listen_error("127.0.0.1:9101", &busy).to_string(),
+            "127.0.0.1:9101 is already in use; pass --addr"
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let cli = cli::parse(["serve", "--demo", "--addr", &addr]).unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(capture_command(&cli, &mut out, &mut err), EXIT_ERROR);
+        let err = String::from_utf8(err).unwrap();
+        assert_eq!(
+            err,
+            format!("siltop: {addr} is already in use; pass --addr\n")
+        );
     }
 
     #[test]

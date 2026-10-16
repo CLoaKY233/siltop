@@ -16,8 +16,8 @@ description: work_80x24 with a style key per cell; legend at the bottom
 |ammmmmmmmmmmmmmmmaannnnnnnnnnnnnnnadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ ollama-runner              31.9      9.6G│|
 |aooooooooooooooooaapppppppppppppppadedddddddddddddddddddddddddeeeeeeedddddddddde|
-|╰─−2m────────now─╯╰───────────────╯ │ rust-analyzer              22.7      2.5G│|
-|aabbbaaaaaaaabbbaaaaaaaaaaaaaaaaaaadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╰─−2m────────now─╯╰─−2m───────now─╯ │ rust-analyzer              22.7      2.5G│|
+|aabbbaaaaaaaabbbaaaabbbaaaaaaabbbaadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |╭ mem  15.2G ─[↗]╮╭ heat  64° ─[↗]╮ │ WindowServer               14.2      412M│|
 |abbbbaacccccaabbbaabbbbbaaqqqaabbbadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |│██████████▒▒▒▒──││          ⢀⡀   │ │ Brave Browser Helper …     12.1      402M│|
@@ -26,18 +26,18 @@ description: work_80x24 with a style key per cell; legend at the bottom
 |assssssssssssssssaawwdddwwwwwwwwwwadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ SourceKitService            7.9      880M│|
 |attttttttttttttttaaxxxxxxxxxxxxxxxadedddddddddddddddddddddddddeeeeeeedddddddddde|
-|╰─−2m────────now─╯╰───────────────╯ │ Brave Browser               6.4      488M│|
-|aabbbaaaaaaaabbbaaaaaaaaaaaaaaaaaaadedddddddddddddddddddddddddeeeeeeedddddddddde|
-|╭ net ────────[↗]╮╭ disk ──────[↗]╮ │ zed                         5.2      739M│|
-|abbbbaaaaaaaaabbbaabbbbbaaaaaaabbbadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╰─−2m────────now─╯╰─−2m───────now─╯ │ Brave Browser               6.4      488M│|
+|aabbbaaaaaaaabbbaaaabbbaaaaaaabbbaadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╭ net  ↓155K ─[↗]╮╭ disk ──────[↗]╮ │ zed                         5.2      739M│|
+|abbbbaacccccaabbbaabbbbbaaaaaaabbbadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |│                ││               │ │ cargo                       4.4       72M│|
 |addddddddddddddddaadddddddddddddddadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |│⣤⣤⣤⣀⡀  ⢀⣠⣄⣤⣤⣄⣀⣀ ││⣤⢀ ⣀⣤⡄ ⢀⣠⣄⡀ ⣤⣀⣀│ │ mds_stores                  3.7       96M│|
 |ayyyyyddyyyyyyyydaazzdzzzdzzzzdzzzadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |│                ││               │ │ Xcode                       3.3      1.4G│|
 |addddddddddddddddaadddddddddddddddadedddddddddddddddddddddddddeeeeeeedddddddddde|
-|╰─−2m────────now─╯╰───────────────╯ │ Simulator                   2.8      402M│|
-|aabbbaaaaaaaabbbaaaaaaaaaaaaaaaaaaadedddddddddddddddddddddddddeeeeeeedddddddddde|
+|╰─−2m────────now─╯╰─−2m───────now─╯ │ Simulator                   2.8      402M│|
+|aabbbaaaaaaaabbbaaaabbbaaaaaaabbbaadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |╭ power  82% ▼ ──────── 80–95% [↗]╮ │ Brave Browser Helper …      2.6      188M│|
 |abbbbbbaadddddaaaaaaaaabbbbbbbbbbbadedddddddddddddddddddddddddeeeeeeedddddddddde|
 |│                                 │ │ photoanalysisd              2.1      210M│|

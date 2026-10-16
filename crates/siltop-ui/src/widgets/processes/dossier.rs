@@ -665,12 +665,23 @@ fn paint_identity(
     let mut spans = Vec::new();
     push_token(&mut spans, proc.name.clone(), big_style(theme));
     push_token(&mut spans, format!("@{}", proc.user), theme.dim());
-    push_kv(&mut spans, theme, "state", status, theme.title());
+    // Padded so `up 8s` → `up 12s` (or sleeping → running) never reflows
+    // the tokens after them every second.
+    push_kv(
+        &mut spans,
+        theme,
+        "state",
+        format!("{status:<8}"),
+        theme.title(),
+    );
     push_kv(
         &mut spans,
         theme,
         "up",
-        started_ago(proc.start_unix, super::table::now_unix()),
+        format!(
+            "{:<4}",
+            started_ago(proc.start_unix, super::table::now_unix())
+        ),
         theme.fg(),
     );
     push_kv(&mut spans, theme, "pid", proc.pid.to_string(), theme.fg());
@@ -745,15 +756,33 @@ fn paint_live(frame: &mut Frame, area: Rect, proc: &Process, cpu_div: f32, theme
 
 fn paint_command(frame: &mut Frame, area: Rect, proc: &Process, theme: &Theme) {
     let inner = cell(frame, area, "command", theme);
-    let text = proc.command.as_deref().unwrap_or("—");
     let max = usize::from(inner.width.max(1));
+    // A bare path keeps its head and its binary name; a command line
+    // reads left to right, so it is cut at the end.
+    let text = match command_line(proc) {
+        Some(line) => super::table::fit(&line, inner.width.max(1)),
+        None => elide_middle(proc.command.as_deref().unwrap_or("—"), max),
+    };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            elide_middle(text, max),
-            theme.fg(),
-        ))),
+        Paragraph::new(Line::from(Span::styled(text, theme.fg()))),
         inner,
     );
+}
+
+/// The full command line, as `Y` copies it but with the executable's full
+/// path: `/bin/sleep 6020`. `None` when there are no arguments past argv0.
+fn command_line(proc: &Process) -> Option<String> {
+    let rest = proc.args.get(1..).filter(|rest| !rest.is_empty())?;
+    let head = proc
+        .command
+        .clone()
+        .or_else(|| proc.args.first().cloned())?;
+    Some(
+        std::iter::once(head)
+            .chain(rest.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn paint_family(frame: &mut Frame, area: Rect, view: &AppView<'_>, proc: &Process, theme: &Theme) {
@@ -915,6 +944,29 @@ mod tests {
             assert!(!text.starts_with('-'), "{start} {now}: {text}");
         }
         assert_eq!(started_ago(200, 100), "0s", "a start in the future is now");
+    }
+
+    /// Regression: the command cell showed `/bin/sleep` while `Y` copied
+    /// `sleep 6020`; it shows the whole command line, cut with `…`.
+    #[test]
+    fn command_cell_shows_the_arguments() {
+        let mut fx = fixture("");
+        let proc = &mut fx.snap.processes[0];
+        proc.command = Some(String::from("/bin/sleep"));
+        proc.args = vec![String::from("sleep"), String::from("6020")];
+        assert_eq!(command_line(proc).as_deref(), Some("/bin/sleep 6020"));
+        fx.detail_pid = Some(proc.pid);
+        let (text, _) = paint(&fx, 120, 40);
+        assert!(text.contains("/bin/sleep 6020"), "{text}");
+        let proc = &mut fx.snap.processes[0];
+        proc.args = vec![String::from("sleep")];
+        assert_eq!(command_line(proc), None, "no arguments: the path alone");
+        proc.args = std::iter::once(String::from("sleep"))
+            .chain((0..60).map(|i| format!("--flag-{i}")))
+            .collect();
+        let (text, _) = paint(&fx, 120, 40);
+        assert!(text.contains("/bin/sleep --flag-0"), "{text}");
+        assert!(text.contains('…'), "{text}");
     }
 
     #[test]

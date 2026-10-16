@@ -114,13 +114,28 @@ it means the end of that day) or a span ago (`90m`, `24h`, `7d`); the
 defaults are everything kept and now. Ranges starting inside the last 24 h
 read the Day tier (6 s buckets), older ones the Month tier (144 s).
 
-Columns: `unix_s`, `utc` (ISO 8601, `Z`), `samples`, then `<series>_mean`
-and `<series>_max` for each of the 14 series (`cpu_ratio`, `gpu_ratio`,
-`mem_ratio`, `swap_bytes`, `net_rx_bytes_per_s`, `net_tx_bytes_per_s`,
-`disk_read_bytes_per_s`, `disk_write_bytes_per_s`, `cpu_temp_c`,
-`gpu_temp_c`, `sys_power_w`, `cpu_power_w`, `gpu_power_w`, `fan_rpm`), then
-`top_cpu`, `top_energy`, `top_mem` as `name (pid) value; ...`. An absent
-reading is an empty cell. Cells are RFC 4180-quoted only when needed. A
+Columns (48, generated from `Series::ALL` by `export::header`): `unix_s`,
+`utc` (ISO 8601, `Z`), `samples`, then `<series>_mean` and `<series>_max`
+for each of the 21 series, in this order:
+
+- the 14 of store record version 1: `cpu_ratio`, `gpu_ratio`, `mem_ratio`,
+  `swap_bytes`, `net_rx_bytes_per_s`, `net_tx_bytes_per_s`,
+  `disk_read_bytes_per_s`, `disk_write_bytes_per_s`, `cpu_temp_c`,
+  `gpu_temp_c`, `sys_power_w`, `cpu_power_w`, `gpu_power_w`, `fan_rpm`;
+- the 6 version 2 added: `battery_pct` (0..=100), `battery_w` (signed: +
+  charging, − draining), `on_ac` (1 on AC, 0 on battery; its mean is the
+  share of the bucket on AC), `thermal_state` (0 nominal ..= 3 critical),
+  `throttled_ratio` (share of the bucket at serious or worse),
+  `battery_health_pct`;
+- version 3's `cpu_hot_ratio` (share of the bucket the CPU read at or
+  above `HOT_C`).
+
+Then `top_cpu`, `top_energy`, `top_mem` as `name (pid) value; ...`. These
+are per-process lists, so a name is the process's display name cut to the
+store's 16-byte field (`Brave Browser He`); the report's energy by app
+folds helpers into their `.app` first and so keeps whole app names. Battery
+columns are empty on desktops, and rows from older records leave the
+columns their version lacks empty. An absent reading is an empty cell. Cells are RFC 4180-quoted only when needed. A
 closed pipe (`| head`) ends the export quietly.
 
 ## Deferred

@@ -631,6 +631,45 @@ mod tests {
         assert!(lines[5].contains("╰ Arc Helper"), "{}", lines[5]);
     }
 
+    /// Regression (live): a group read `▸ disclaimer +14`, named after a
+    /// launcher with the lowest pid; it is labelled by its bundle, and the
+    /// app's own binary heads it.
+    #[test]
+    fn group_is_labelled_by_its_bundle_not_its_first_process() {
+        let mut fx = fixture("");
+        let run = |pid: u32, name: &str, cmd: &str| Process {
+            command: Some(cmd.to_owned()),
+            ..process(pid, name, 1.0)
+        };
+        fx.snap.processes = vec![
+            run(
+                5,
+                "disclaimer",
+                "/Applications/Ghostty.app/Contents/MacOS/disclaimer",
+            ),
+            run(
+                6,
+                "ghostty",
+                "/Applications/Ghostty.app/Contents/MacOS/ghostty",
+            ),
+            run(7, "zsh", "/bin/zsh"),
+        ];
+        fx.proc.grouped = true;
+        let lines = paint(&fx.view(), 80, 8).join("\n");
+        assert!(lines.contains("▸ Ghostty "), "{lines}");
+        assert!(!lines.contains("disclaimer"), "{lines}");
+        let model = super::model::ProcModel::build_nested(
+            &fx.snap.processes,
+            "",
+            siltop_core::ProcSort::Pid,
+            false,
+            super::model::Nesting::Apps,
+            &super::model::Folds::default(),
+        );
+        let head = model.rows().iter().find(|r| r.app_group).map(|r| r.pid);
+        assert_eq!(head, Some(6), "the app's own binary heads the group");
+    }
+
     #[test]
     fn collapsed_tree_node_paints_its_subtree_total() {
         let mut fx = fixture("");

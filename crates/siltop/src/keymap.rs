@@ -419,9 +419,6 @@ const NORMAL_COMMON: &[Binding] = &[
 ];
 
 const NORMAL_SILTOP: &[Binding] = &[
-    // `U` is "untag all" on the htop profile, so only the profiles that
-    // leave it free open the update dialog from here.
-    b(&[ch('U')], Action::CheckUpdate, General, ""),
     b(&[ch('s')], Action::Settings, General, "settings"),
     b(
         &[ch('v')],
@@ -443,6 +440,14 @@ const NORMAL_SILTOP: &[Binding] = &[
         Action::IntervalFaster,
         General,
         "sample faster",
+    ),
+    // `U` is "untag all" on the htop profile, so only the profiles that
+    // leave it free check for updates from here.
+    b(
+        &[ch('U')],
+        Action::CheckUpdate,
+        General,
+        "check for updates",
     ),
     b(&[RIGHT], Action::Unfold, Navigate, "open node / next box"),
     b(&[LEFT], Action::Fold, Navigate, "close node / previous box"),
@@ -601,7 +606,12 @@ const NORMAL_HTOP: &[Binding] = &[
 ];
 
 const NORMAL_BTOP: &[Binding] = &[
-    b(&[ch('U')], Action::CheckUpdate, General, ""),
+    b(
+        &[ch('U')],
+        Action::CheckUpdate,
+        General,
+        "check for updates",
+    ),
     b(&[ch('o'), ch('s')], Action::Settings, General, "settings"),
     b(
         &[ch('v')],

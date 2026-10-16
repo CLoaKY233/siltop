@@ -22,6 +22,85 @@ fn item(out: &mut String, tag: &str, body: &str) {
     let _ = write!(out, ".TP\n\\fB{}\\fR\n{}\n", esc(tag), esc(body));
 }
 
+/// Every file siltop reads or writes. `$XDG_CONFIG_HOME` defaults to
+/// `~/.config`, `$XDG_STATE_HOME` to `~/.local/state`.
+const FILES: &[(&str, &str)] = &[
+    (
+        "$XDG_CONFIG_HOME/siltop/config.toml",
+        "Preferences, saved as you change them (default ~/.config).",
+    ),
+    (
+        "$XDG_CONFIG_HOME/siltop/themes/",
+        "Your own themes, one .toml each; theme import writes here.",
+    ),
+    (
+        "$XDG_STATE_HOME/siltop/history/",
+        "Long history, up to 30 days (default ~/.local/state).",
+    ),
+    (
+        "$XDG_STATE_HOME/siltop/agent.json",
+        "The background agent's latest readings, which line reads.",
+    ),
+    (
+        "$XDG_STATE_HOME/siltop/agent.log",
+        "The background agent's output.",
+    ),
+    (
+        "$XDG_STATE_HOME/siltop/bench.ndjson",
+        "Every bench run, for the comparison with the last one.",
+    ),
+    (
+        "$XDG_STATE_HOME/siltop/updates.toml",
+        "When updates were last checked, and a skipped version.",
+    ),
+    (
+        "$XDG_STATE_HOME/siltop/crash-*.txt",
+        "One report per crash; nothing is sent.",
+    ),
+    (
+        "~/Library/LaunchAgents/com.siltop.agent.plist",
+        "The background agent, from agent install.",
+    ),
+];
+
+/// Every variable siltop reads.
+const ENVIRONMENT: &[(&str, &str)] = &[
+    (
+        "SILTOP_THEME",
+        "A theme name; wins over the config file (siltop theme list).",
+    ),
+    (
+        "SILTOP_KEYS",
+        "Start with the siltop, htop or btop key profile.",
+    ),
+    (
+        "SILTOP_COLORS",
+        "Force the colour depth: truecolor, 256, 16 or none.",
+    ),
+    ("SILTOP_ICONS", "Panel icons: unicode, nerd or none."),
+    (
+        "SILTOP_GLASS",
+        "Translucent window: on, off, auto, or an opacity such as 0.8.",
+    ),
+    ("SILTOP_NO_ONBOARDING", "Set to skip the first-run screens."),
+    (
+        "SILTOP_NO_UPDATE_CHECK",
+        "Set (not 0 or false) to turn update checks off.",
+    ),
+    (
+        "NO_COLOR",
+        "Any non-empty value: no colour unless a theme is named; line --style ansi prints plain text.",
+    ),
+    (
+        "XDG_CONFIG_HOME",
+        "Where the config and themes live (default ~/.config).",
+    ),
+    (
+        "XDG_STATE_HOME",
+        "Where history and other state live (default ~/.local/state).",
+    ),
+];
+
 /// The whole page.
 #[must_use]
 pub fn page() -> String {
@@ -36,8 +115,9 @@ pub fn page() -> String {
     out.push_str(".SH SYNOPSIS\n.B siltop\n[\\fIOPTIONS\\fR]\n");
     for command in COMMANDS {
         let _ = write!(out, ".br\n.B siltop {}\n", esc(command.name));
-        if !command.args.is_empty() {
-            let _ = writeln!(out, "\\fI{}\\fR", esc(command.args));
+        let args = cli::synopsis_args(command);
+        if !args.is_empty() {
+            let _ = writeln!(out, "\\fI{}\\fR", esc(&args));
         }
     }
     out.push_str(
@@ -45,7 +125,9 @@ pub fn page() -> String {
          A live dashboard of CPU (per core), GPU, memory, power, temperatures, \
          fans, network, disks and processes on Apple Silicon Macs. Hardware a \
          Mac does not have is hidden rather than shown as zero. Everything runs \
-         offline: no network, no telemetry, no sudo.\n",
+         offline: no network, no telemetry, no sudo. \
+         \\fBsiltop help\\fR \\fICOMMAND\\fR, or \\fICOMMAND\\fR \\fB\\-\\-help\\fR, \
+         prints one command's usage and options.\n",
     );
     let options = |out: &mut String, section: Section| {
         let _ = writeln!(out, ".SH {}", section.title().to_uppercase());
@@ -76,16 +158,16 @@ pub fn page() -> String {
             item(&mut out, keys, help);
         }
     }
+    out.push_str(".SH FILES\n");
+    for (path, what) in FILES {
+        let _ = write!(out, ".TP\n\\fI{}\\fR\n{}\n", esc(path), esc(what));
+    }
+    out.push_str(".SH ENVIRONMENT\n");
+    for (name, what) in ENVIRONMENT {
+        item(&mut out, name, what);
+    }
     out.push_str(
-        ".SH FILES\n\
-         .TP\n\\fI$XDG_CONFIG_HOME/siltop/config.toml\\fR\n\
-         Preferences, saved as you change them (default \\fI~/.config\\fR).\n\
-         .TP\n\\fI$XDG_STATE_HOME/siltop/history\\fR\n\
-         Long history, up to 30 days (default \\fI~/.local/state\\fR).\n\
-         .SH ENVIRONMENT\n\
-         .TP\n\\fBSILTOP_KEYS\\fR\n\
-         Start with the siltop, htop or btop key profile.\n\
-         .SH PRIVACY\n\
+        ".SH PRIVACY\n\
          siltop reads this Mac locally and opens no connection of its own. \
          If update checks are on, it runs \\fB/usr/bin/curl\\fR at most once a day \
          to ask the GitHub API for the latest release number. The only thing sent \
@@ -229,6 +311,75 @@ mod tests {
             }
         }
         assert!(!page.contains('\x1b'));
+    }
+
+    /// Regression: SYNOPSIS printed `siltop theme`, `siltop report [--json]`
+    /// and `siltop agent` without their sub-words, unlike `--help`.
+    #[test]
+    fn synopsis_matches_help_with_every_sub_word() {
+        let text = plain();
+        let synopsis = text
+            .split(".SH SYNOPSIS\n")
+            .nth(1)
+            .and_then(|rest| rest.split(".SH ").next())
+            .unwrap();
+        let help = cli::usage();
+        for command in COMMANDS {
+            let args = cli::synopsis_args(command);
+            let line = format!("siltop {} {args}", command.name);
+            assert!(help.contains(line.trim_end()), "{line}");
+            if !args.is_empty() {
+                assert!(
+                    synopsis.contains(&format!("\\fI{args}\\fR")),
+                    "{args} in {synopsis}"
+                );
+            }
+        }
+        for want in [
+            "[list | import <FILE>]",
+            "[today | week | month] [--json]",
+            "[status | install | uninstall | run]",
+            "[--bug] [--copy]",
+            "[--yes]",
+        ] {
+            assert!(synopsis.contains(want), "{want} in {synopsis}");
+        }
+    }
+
+    /// Every variable the page names is one the code reads, and every
+    /// file names a real path.
+    #[test]
+    fn environment_and_files_name_what_the_code_reads() {
+        let text = plain();
+        let env = text.split(".SH ENVIRONMENT\n").nth(1).unwrap();
+        for name in [
+            "SILTOP_THEME",
+            "SILTOP_KEYS",
+            "SILTOP_COLORS",
+            "SILTOP_ICONS",
+            "SILTOP_GLASS",
+            "SILTOP_NO_ONBOARDING",
+            "SILTOP_NO_UPDATE_CHECK",
+            "NO_COLOR",
+            "XDG_CONFIG_HOME",
+            "XDG_STATE_HOME",
+        ] {
+            assert!(env.contains(&format!("\\fB{name}\\fR")), "{name}");
+        }
+        let files = text.split(".SH FILES\n").nth(1).unwrap();
+        for path in [
+            "config.toml",
+            "themes/",
+            "history/",
+            "agent.json",
+            "agent.log",
+            "bench.ndjson",
+            "updates.toml",
+            "crash-*.txt",
+            &format!("{}.plist", crate::agent::LABEL),
+        ] {
+            assert!(files.contains(path), "{path}");
+        }
     }
 
     #[test]

@@ -186,8 +186,45 @@ pub fn merge_apps<'a>(
     split_apps(rows, other.map(|o| o / total))
 }
 
-/// Every process's watts in one bucket, folded by display name. Bounded by
-/// the process table (a few hundred names) and emptied at each close.
+/// The app a process belongs to, by the dashboard's "group helpers by
+/// app" rule: the outermost `.app` bundle in its executable path (or
+/// argv[0]), looking past a bundle's `Contents/Developer/` toolchain and
+/// never through a `.framework` (an interpreter such as Python.app runs
+/// separate programs). `Brave Browser Helper (Renderer)` is `Brave
+/// Browser`; a process outside any bundle keeps its display name.
+///
+/// The history keeps [`APP_N`] names of a few bytes each, so folding by
+/// app first keeps whole apps instead of `Brave Browser He` and its
+/// helpers as separate cut-off rows.
+#[must_use]
+fn app_name(proc: &Process) -> &str {
+    const TOOLCHAIN: &str = "/Contents/Developer/";
+    let bundle = || {
+        let path = proc
+            .command
+            .as_deref()
+            .filter(|c| c.starts_with('/'))
+            .or_else(|| proc.args.first().map(String::as_str))?;
+        let mut end = 0;
+        loop {
+            end += path[end..].find(".app/")? + ".app".len();
+            if !path[end..].starts_with(TOOLCHAIN) {
+                break;
+            }
+        }
+        let bundle = &path[..end];
+        if bundle.contains(".framework/") {
+            return None;
+        }
+        let stem = bundle.rsplit('/').next()?.strip_suffix(".app")?;
+        (!stem.trim().is_empty()).then_some(stem)
+    };
+    bundle().unwrap_or(proc.name.as_str())
+}
+
+/// Every process's watts in one bucket, folded by app ([`app_name`]).
+/// Bounded by the process table (a few hundred names) and emptied at each
+/// close.
 #[derive(Debug, Clone, Default)]
 struct AppSums {
     /// name → (summed watts over samples, most processes in one sample).
@@ -206,11 +243,12 @@ impl AppSums {
                 continue;
             };
             self.measured = true;
-            *seen.entry(p.name.as_str()).or_default() += 1;
-            match self.by_name.get_mut(p.name.as_str()) {
+            let name = app_name(p);
+            *seen.entry(name).or_default() += 1;
+            match self.by_name.get_mut(name) {
                 Some(e) => e.0 += f64::from(w),
                 None => {
-                    self.by_name.insert(p.name.clone(), (f64::from(w), 0));
+                    self.by_name.insert(name.to_owned(), (f64::from(w), 0));
                 }
             }
         }
@@ -409,6 +447,86 @@ mod tests {
         s.primed = true;
         s.processes = procs;
         s
+    }
+
+    fn bundled(pid: u32, name: &str, command: &str, watts: f32) -> Process {
+        Process {
+            command: Some(command.to_owned()),
+            ..proc(pid, name, 1.0, watts, 1)
+        }
+    }
+
+    #[test]
+    fn app_name_follows_the_dashboards_app_groups() {
+        let brave = "/Applications/Brave Browser.app/Contents";
+        for (command, name, want) in [
+            (
+                format!("{brave}/MacOS/Brave Browser"),
+                "Brave Browser",
+                "Brave Browser",
+            ),
+            (
+                format!(
+                    "{brave}/Frameworks/Brave Browser Framework.framework/Helpers/Brave Browser Helper (Renderer).app/Contents/MacOS/Brave Browser Helper (Renderer)"
+                ),
+                "Brave Browser Helper (Renderer)",
+                "Brave Browser",
+            ),
+            (
+                String::from("/Applications/Xcode.app/Contents/Developer/usr/bin/git"),
+                "git",
+                "git",
+            ),
+            (
+                String::from(
+                    "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+                ),
+                "train.py",
+                "train.py",
+            ),
+            (String::from("/usr/bin/cargo"), "cargo", "cargo"),
+        ] {
+            assert_eq!(
+                app_name(&bundled(1, name, &command, 1.0)),
+                want,
+                "{command}"
+            );
+        }
+    }
+
+    /// Regression: the report's "energy by app" listed `Brave Browser He`
+    /// and `Claude Helper (R` (16-byte names) beside their apps. Helpers
+    /// now fold into their app before the name is stored.
+    #[test]
+    fn energy_by_app_folds_helpers_into_their_app() {
+        let app = "/Applications/Claude.app/Contents";
+        let procs = vec![
+            bundled(10, "Claude", &format!("{app}/MacOS/Claude"), 1.0),
+            bundled(
+                11,
+                "Claude Helper (Renderer)",
+                &format!(
+                    "{app}/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)"
+                ),
+                2.0,
+            ),
+            bundled(
+                12,
+                "Claude Helper (GPU)",
+                &format!(
+                    "{app}/Frameworks/Claude Helper (GPU).app/Contents/MacOS/Claude Helper (GPU)"
+                ),
+                0.5,
+            ),
+            proc(20, "cargo", 1.0, 0.25, 1),
+        ];
+        let mut sums = AppSums::default();
+        sums.add(&procs);
+        let (apps, other) = sums.close(1);
+        let names: Vec<(&str, usize)> = apps.iter().map(|a| (a.name.as_str(), a.count)).collect();
+        assert_eq!(names, [("Claude", 3), ("cargo", 1)]);
+        assert!((apps[0].value - 3.5).abs() < 1e-6);
+        assert_eq!(other, Some(0.0));
     }
 
     #[test]

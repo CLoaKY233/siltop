@@ -184,11 +184,14 @@ fn write_state(path: &Path, summary: &Summary) -> std::io::Result<()> {
 }
 
 /// The agent's loop: sample, judge, deliver, record into the history
-/// store under `history`. Runs until killed (launchd sends SIGTERM) or
-/// `ticks` runs out.
+/// store under `history`. Runs until `stop` answers true (launchd sends
+/// SIGTERM on unload and logout) or `ticks` runs out. Returning drops the
+/// recorder, which writes the open history bucket: a stop never loses the
+/// last few seconds.
 pub fn run_loop<T, S>(
     tick: &mut T,
     wait: &mut S,
+    stop: &dyn Fn() -> bool,
     config: &Config,
     history: Option<&Path>,
     state: Option<&Path>,
@@ -202,8 +205,12 @@ where
     let (mut recorder, _warning) = crate::store_disk::Recorder::new(history);
     let _prime = tick()?;
     let mut done = 0_u64;
-    while ticks.is_none_or(|n| done < n) {
+    while ticks.is_none_or(|n| done < n) && !stop() {
         wait(AGENT_INTERVAL);
+        // A stop during the wait samples nothing more.
+        if stop() {
+            break;
+        }
         let snap = tick()?;
         let unix_ms = crate::headless::unix_ms_now();
         let (summary, deliveries) = agent.step(&snap, Instant::now(), unix_ms);
@@ -446,6 +453,7 @@ mod tests {
         run_loop(
             &mut tick,
             &mut wait,
+            &|| false,
             &Config::default(),
             None,
             Some(&path),
@@ -456,5 +464,49 @@ mod tests {
         let summary = crate::line::read_fresh(&path, crate::headless::unix_ms_now()).unwrap();
         assert_eq!(summary.cpu_pct, Some(25.0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: launchd's SIGTERM killed `agent run` (exit 143) and the
+    /// open history bucket was lost. A stop now ends the loop cleanly and
+    /// the partial bucket reaches the store.
+    #[test]
+    fn a_stop_ends_the_loop_and_keeps_the_open_history_bucket() {
+        use siltop_core::store::{HistoryStore as _, Tier};
+        let dir = std::env::temp_dir().join(format!(
+            "siltop-agent-stop-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = dir.join("history");
+        let mut tick = || {
+            let mut snap = Snapshot::empty();
+            snap.primed = true;
+            snap.cpu.scaled = 0.5;
+            snap.cpu.active = 0.5;
+            Ok(snap)
+        };
+        let waits = std::cell::Cell::new(0);
+        let mut wait = |_| waits.set(waits.get() + 1);
+        // The signal lands during the second wait.
+        let stop = || waits.get() >= 2;
+        run_loop(
+            &mut tick,
+            &mut wait,
+            &stop,
+            &Config::default(),
+            Some(&history),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(waits.get(), 2, "no tick after the stop");
+        let store =
+            crate::store_disk::DiskStore::open(&history, crate::store_disk::SIZE_CAP).unwrap();
+        let now = crate::store_disk::unix_now();
+        let kept = store.buckets(now - 3600, now + 3600, Tier::Day).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0].samples, 1);
     }
 }

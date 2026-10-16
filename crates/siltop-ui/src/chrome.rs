@@ -466,7 +466,12 @@ pub(crate) fn stamp_edge_labels(
     theme: &Theme,
 ) {
     let y = plot.bottom();
-    if plot.width < 16 || y >= buf.area.bottom() || plot.right() > buf.area.right() {
+    // Room for both labels, a cell in from each corner and a gap between:
+    // the right column of an 80x24 screen (15 wide) keeps them like the left.
+    let need = unicode_width::UnicodeWidthStr::width(left)
+        + unicode_width::UnicodeWidthStr::width(right)
+        + 4;
+    if usize::from(plot.width) < need || y >= buf.area.bottom() || plot.right() > buf.area.right() {
         return;
     }
     let is_rule = |buf: &Buffer, x: u16| buf[(x, y)].symbol() == "\u{2500}";
@@ -1640,8 +1645,21 @@ mod tests {
         let h = ramp_history(60);
         let rows = paint(&h, TimeAxis::live(&h), 42, 4, false);
         assert!(rows.iter().all(|r| !r.contains("now")), "{rows:#?}");
-        let narrow = paint(&h, TimeAxis::live(&h), 14, 5, true);
+        let narrow = paint(&h, TimeAxis::live(&h), 10, 5, true);
         assert!(narrow.iter().all(|r| !r.contains("now")), "{narrow:#?}");
+    }
+
+    /// Regression: at 80x24 the right-hand boxes (15 wide) lost their
+    /// `−2m … now` while the left ones (16 wide) kept them.
+    #[test]
+    fn time_labels_fit_a_fifteen_cell_plot() {
+        let h = ramp_history(60);
+        let rows = paint(&h, TimeAxis::live(&h), 17, 5, true);
+        let bottom = rows.last().unwrap();
+        assert!(
+            bottom.contains("now") && bottom.contains('\u{2212}'),
+            "{bottom}"
+        );
     }
 
     #[test]

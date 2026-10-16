@@ -205,8 +205,15 @@ fn name_spans(
         .filter(|m| m.width() + prefix.width() + 2 <= usize::from(width))
         .unwrap_or_default();
     let name_w = u16::try_from(usize::from(width).saturating_sub(more.width())).unwrap_or(width);
-    // Names from an old trace predate collection-time scrubbing.
-    let name = fit(&format!("{prefix}{}", printable(&proc.name)), name_w);
+    // An app group is labelled by its bundle (`Ghostty`), not by whichever
+    // member heads it. Names from an old trace predate collection-time
+    // scrubbing.
+    let label = row
+        .app_group
+        .then_some(proc)
+        .and_then(super::model::app_bundle)
+        .map_or(proc.name.as_str(), super::model::bundle_name);
+    let name = fit(&format!("{prefix}{}", printable(label)), name_w);
     let used = name.width();
     let mut spans = Vec::new();
     match name.strip_prefix(prefix.as_str()) {

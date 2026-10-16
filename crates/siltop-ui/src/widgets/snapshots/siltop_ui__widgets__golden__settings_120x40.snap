@@ -8,7 +8,7 @@ description: "settings_120x40: 120x40"
 |   appearance│   layout            auto                                                                                 |
 |   panels    │   network units     bytes/s                                                                              |
 |   processes │   battery saver     auto                                                                                 |
-|   alerts    │   preset            custom                                                                               |
+|   alerts    │   preset            default                                                                              |
 |   keys      │                                                                                                          |
 |   privacy   │                                                                                                          |
 |   about     │                                                                                                          |

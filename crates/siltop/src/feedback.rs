@@ -138,8 +138,12 @@ pub fn run(
             }
         }
     }
-    if writeln!(out, "{url}").is_err() {
-        return EXIT_ERROR;
+    match writeln!(out, "{url}").and_then(|()| out.flush()) {
+        // The reader went away (`| true`): nothing more to say, and no
+        // browser for a link nobody saw printed.
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return 0,
+        Err(_) => return EXIT_ERROR,
+        Ok(()) => {}
     }
     if copy || hooks.ssh {
         return 0;
@@ -288,6 +292,35 @@ mod tests {
         assert!(out.contains(URL));
         assert!(err.contains("siltop doctor"), "{err}");
         assert!(opened.is_empty());
+    }
+
+    /// Regression: `siltop feedback | true` exited 1.
+    #[test]
+    fn a_closed_stdout_is_a_normal_end_and_opens_nothing() {
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut opened = 0;
+        let mut open = |_: &str| {
+            opened += 1;
+            Ok(())
+        };
+        let mut copy = || Ok(());
+        let mut hooks = Hooks {
+            open: &mut open,
+            copy: &mut copy,
+            ssh: true,
+        };
+        let mut err = Vec::new();
+        assert_eq!(run(false, URL, &mut hooks, &mut Closed, &mut err), 0);
+        assert!(err.is_empty());
+        assert_eq!(opened, 0);
     }
 
     #[test]

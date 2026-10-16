@@ -8,12 +8,25 @@ use siltop_ui::{TimelineHit, TimelineView, ToastKind, timeline_hit, timeline_plo
 use super::{App, STATUS_TTL};
 use crate::keymap::Action;
 
+/// Why `H` does nothing during `siltop replay`.
+pub(super) const REPLAY_NO_TIMELINE: &str = "no timeline in a replay: ←/→ scrub the trace";
+
 /// Seconds between refreshes while the page is open: one Day bucket.
 const REFRESH_S: u64 = 6;
 
 impl App {
     /// `H` and the menu's Timeline item: open the page, or close it.
     pub(super) fn toggle_timeline(&mut self) {
+        // The store holds this Mac's history (or this session's), never the
+        // trace's: a timeline over a replay would mislabel whose data it is.
+        if self.timeline.is_none() && self.source.player().is_some() {
+            self.set_toast(
+                String::from(REPLAY_NO_TIMELINE),
+                ToastKind::Info,
+                STATUS_TTL,
+            );
+            return;
+        }
         if self.timeline.take().is_none() {
             self.menu = None;
             self.settings = None;

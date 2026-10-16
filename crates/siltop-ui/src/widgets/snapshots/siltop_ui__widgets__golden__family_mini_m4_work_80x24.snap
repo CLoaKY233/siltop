@@ -12,17 +12,17 @@ description: "family_mini_m4_work_80x24: 80x24"
 |│⣿⣷⣤⣀ ⣠⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣷⣀⣷⣿⣿⣿⣧⢠⣿⣿⣿⣿⡀│ │ rust-analyzer              22.7      2.5G│|
 |│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ WindowServer               14.2      412M│|
 |│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ Brave Browser Helper …     12.1      402M│|
-|╰─−2m────────now─╯╰───────────────╯ │ Brave Browser Helper …      9.8      301M│|
+|╰─−2m────────now─╯╰─−2m───────now─╯ │ Brave Browser Helper …      9.8      301M│|
 |╭ mem  10.1G ─[↗]╮╭ heat  64° ─[↗]╮ │ SourceKitService            7.9      880M│|
 |│██████████▒▒▒▒▒─││               │ │ Brave Browser               6.4      488M│|
 |│                ││       ⢀⣠⣤⣾⣷⣶⣄⡀│ │ zed                         5.2      739M│|
 |│⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣷⣿││⣷⣦⣄⣀⣠⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿│ │ cargo                       4.4       72M│|
 |│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ │ mds_stores                  3.7       96M│|
-|╰─−2m────────now─╯╰───────────────╯ │ Xcode                       3.3      1.4G│|
-|╭ net ────────[↗]╮╭ disk ──────[↗]╮ │ Simulator                   2.8      402M│|
+|╰─−2m────────now─╯╰─−2m───────now─╯ │ Xcode                       3.3      1.4G│|
+|╭ net  ↓155K ─[↗]╮╭ disk ──────[↗]╮ │ Simulator                   2.8      402M│|
 |│                ││               │ │ Brave Browser Helper …      2.6      188M│|
 |│⣤⣤⣤⣀⡀  ⢀⣠⣄⣤⣤⣄⣀⣀ ││⣤⢀ ⣀⣤⡄ ⢀⣠⣄⡀ ⣤⣀⣀│ │ photoanalysisd              2.1      210M│|
 |│                ││⠈⠁ ⠈   ⠁ ⠈⠁    │ │ Terminal                    1.9      118M│|
 |│                ││               │ │ backupd  Time Machine       1.6       51M│|
-|╰─−2m────────now─╯╰───────────────╯ ╰──────────────────────────────────────────╯|
+|╰─−2m────────now─╯╰─−2m───────now─╯ ╰──────────────────────────────────────────╯|
 | siltop ≡  ? help  f filter  x kill  s settings  q quit                   ● 1 s |

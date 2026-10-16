@@ -48,7 +48,7 @@ pub fn probe() {
             let _ = writeln!(
                 std::io::stderr(),
                 "siltop: unknown theme {name:?}; using auto (themes: {})",
-                Theme::names().join(", ")
+                Theme::catalog().join(", ")
             );
         }
         let wants_auto = requested

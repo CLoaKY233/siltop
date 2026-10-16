@@ -191,10 +191,18 @@ pub const PLACEHOLDERS: [&str; 9] = [
     "cpu", "gpu", "mem", "power", "temp", "swap", "thermal", "verdict", "alerts",
 ];
 
-/// Theme colours for the three levels.
+/// Theme colours for a reading: a calm one per resource, as the
+/// dashboard paints it, then the theme's warning and critical colours.
+/// `Color::Reset` paints nothing (see [`Palette::none`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
-    normal: Color,
+    cpu: Color,
+    gpu: Color,
+    mem: Color,
+    power: Color,
+    temp: Color,
+    /// A calm verdict.
+    ok: Color,
     warn: Color,
     crit: Color,
 }
@@ -203,34 +211,89 @@ impl Palette {
     #[must_use]
     pub fn from_theme(theme: &siltop_ui::Theme) -> Self {
         Self {
-            normal: theme.fg,
+            cpu: theme.cpu.body,
+            gpu: theme.gpu.body,
+            mem: theme.mem.body,
+            // The power panel's own accent in the dashboard.
+            power: theme.fan.body,
+            temp: theme.temp.body,
+            ok: theme.ok,
             warn: theme.warn,
             crit: theme.crit,
         }
     }
 
-    const fn pick(&self, level: Level) -> Color {
-        match level {
-            Level::Normal => self.normal,
-            Level::Warn => self.warn,
-            Level::Crit => self.crit,
+    /// No colour at all: `NO_COLOR`, or tmux markup without colours.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            cpu: Color::Reset,
+            gpu: Color::Reset,
+            mem: Color::Reset,
+            power: Color::Reset,
+            temp: Color::Reset,
+            ok: Color::Reset,
+            warn: Color::Reset,
+            crit: Color::Reset,
         }
     }
+
+    /// The colour of placeholder `name` at `level`.
+    fn pick(&self, name: &str, level: Level) -> Color {
+        match level {
+            Level::Warn => self.warn,
+            Level::Crit => self.crit,
+            Level::Normal => match name {
+                "cpu" => self.cpu,
+                "gpu" => self.gpu,
+                "mem" | "swap" => self.mem,
+                "power" => self.power,
+                "temp" => self.temp,
+                _ => self.ok,
+            },
+        }
+    }
+}
+
+/// The 16 named ANSI colours as their palette index.
+const fn ansi_index(color: Color) -> Option<u8> {
+    Some(match color {
+        Color::Black => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::Gray => 7,
+        Color::DarkGray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+        Color::Indexed(n) => n,
+        _ => return None,
+    })
 }
 
 fn ansi(color: Color) -> Option<String> {
     match color {
         Color::Rgb(r, g, b) => Some(format!("\x1b[38;2;{r};{g};{b}m")),
         Color::Indexed(n) => Some(format!("\x1b[38;5;{n}m")),
-        _ => None,
+        named => ansi_index(named).map(|n| match n {
+            0..=7 => format!("\x1b[{}m", 30 + n),
+            _ => format!("\x1b[{}m", 90 + n - 8),
+        }),
     }
 }
 
 fn tmux(color: Color) -> Option<String> {
     match color {
         Color::Rgb(r, g, b) => Some(format!("#[fg=#{r:02x}{g:02x}{b:02x}]")),
-        Color::Indexed(n) => Some(format!("#[fg=colour{n}]")),
-        _ => None,
+        named => ansi_index(named).map(|n| format!("#[fg=colour{n}]")),
     }
 }
 
@@ -272,8 +335,8 @@ pub fn render(format: &str, summary: &Summary, style: Style, palette: &Palette) 
                 };
                 let paint = match style {
                     Style::Plain => None,
-                    Style::Ansi => ansi(palette.pick(level)).map(|on| (on, "\x1b[39m")),
-                    Style::Tmux => tmux(palette.pick(level)).map(|on| (on, "#[fg=default]")),
+                    Style::Ansi => ansi(palette.pick(name, level)).map(|on| (on, "\x1b[39m")),
+                    Style::Tmux => tmux(palette.pick(name, level)).map(|on| (on, "#[fg=default]")),
                 };
                 match paint {
                     Some((on, off)) => {
@@ -340,7 +403,12 @@ mod tests {
     use super::*;
 
     const PALETTE: Palette = Palette {
-        normal: Color::Rgb(200, 200, 200),
+        cpu: Color::Rgb(0, 200, 100),
+        gpu: Color::Rgb(170, 140, 240),
+        mem: Color::Rgb(90, 190, 230),
+        power: Color::Rgb(160, 170, 190),
+        temp: Color::Rgb(120, 170, 250),
+        ok: Color::Rgb(0, 210, 150),
         warn: Color::Rgb(250, 200, 0),
         crit: Color::Rgb(250, 0, 0),
     };
@@ -399,8 +467,65 @@ mod tests {
         let line = render("{cpu} {mem}", &summary, Style::Ansi, &PALETTE);
         assert_eq!(
             line,
-            "\x1b[38;2;250;0;0mcpu 95%\x1b[39m \x1b[38;2;200;200;200mmem 55%\x1b[39m"
+            "\x1b[38;2;250;0;0mcpu 95%\x1b[39m \x1b[38;2;90;190;230mmem 55%\x1b[39m"
         );
+    }
+
+    /// Regression: with the default theme `--style ansi` printed no colour
+    /// at all, because calm readings took the theme's body text colour
+    /// (the terminal's own). Each calm reading now takes its resource's.
+    #[test]
+    fn calm_readings_take_their_resources_colour() {
+        let theme = siltop_ui::Theme::default();
+        let palette = Palette::from_theme(&theme);
+        let line = render(DEFAULT_FORMAT, &busy_pro(), Style::Ansi, &palette);
+        for (token, color) in [
+            ("cpu 42%", theme.cpu.body),
+            ("gpu 7%", theme.gpu.body),
+            ("12W", theme.fan.body),
+            ("61°C", theme.temp.body),
+        ] {
+            let on = ansi(color).unwrap();
+            assert!(
+                line.contains(&format!("{on}{token}\x1b[39m")),
+                "{token}: {line:?}"
+            );
+        }
+        let verdict = render("{verdict}", &busy_pro(), Style::Tmux, &palette);
+        assert!(verdict.starts_with(&tmux(theme.ok).unwrap()), "{verdict}");
+    }
+
+    /// `NO_COLOR` keeps tmux markup but paints nothing; the ANSI style
+    /// falls back to plain text in `main`.
+    #[test]
+    fn no_colour_palette_paints_nothing() {
+        let summary = Summary {
+            cpu_pct: Some(95.0),
+            ..busy_pro()
+        };
+        for style in [Style::Ansi, Style::Tmux] {
+            let line = render(DEFAULT_FORMAT, &summary, style, &Palette::none());
+            assert_eq!(
+                line,
+                render(DEFAULT_FORMAT, &summary, Style::Plain, &PALETTE)
+            );
+        }
+    }
+
+    #[test]
+    fn named_ansi_colours_paint_too() {
+        assert_eq!(ansi(Color::Green).as_deref(), Some("\x1b[32m"));
+        assert_eq!(ansi(Color::LightRed).as_deref(), Some("\x1b[91m"));
+        assert_eq!(tmux(Color::Yellow).as_deref(), Some("#[fg=colour3]"));
+        assert_eq!(ansi(Color::Reset), None);
+        let terminal = siltop_ui::Theme::by_name("terminal").unwrap();
+        let line = render(
+            "{cpu}",
+            &busy_pro(),
+            Style::Ansi,
+            &Palette::from_theme(&terminal),
+        );
+        assert!(line.starts_with('\x1b'), "{line:?}");
     }
 
     #[test]

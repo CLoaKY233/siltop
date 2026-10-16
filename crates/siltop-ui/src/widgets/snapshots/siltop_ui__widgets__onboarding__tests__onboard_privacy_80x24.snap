@@ -5,22 +5,22 @@ source: crates/siltop-ui/src/widgets/onboarding.rs
 |                                                                                |
 |                                                                                |
 |                                                                                |
-|    ╭ siltop · Privacy ────────────────────────────────────────────────────╮    |
-|    │siltop reads your Mac's sensors locally. It sends nothing anywhere,   │    |
-|    │except the update check below if you turn it on.                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │                                                                      │    |
-|    │ [ Continue ]                                                         │    |
-|    │ Enter chooses  ·  Esc skips                                          │    |
-|    ╰──────────────────────────────────────────────────────────────────────╯    |
+|                                                                                |
+|                                                                                |
+|        ╭ Privacy ─────────────────────────────────────────────────────╮        |
+|        │                                                              │        |
+|        │ siltop                                                 2 / 3 │        |
+|        │                                                              │        |
+|        │ siltop reads your Mac's sensors locally. It sends nothing    │        |
+|        │ anywhere, except the update check below if you turn it on.   │        |
+|        │                                                              │        |
+|        │ [ Continue ]                                                 │        |
+|        │ Enter chooses  ·  Esc skips                                  │        |
+|        │                                                              │        |
+|        ╰──────────────────────────────────────────────────────────────╯        |
+|                                                                                |
+|                                                                                |
+|                                                                                |
 |                                                                                |
 |                                                                                |
 |                                                                                |

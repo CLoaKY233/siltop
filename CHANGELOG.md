@@ -15,6 +15,21 @@ All notable changes to siltop. Format: [Keep a Changelog](https://keepachangelog
 - Update errors are one line, a GitHub rate limit says so, and the manual `siltop update` waits up to 20 s instead of 3 s on a slow link.
 - `updates.toml` is valid TOML.
 - `--help` shows that bare `siltop update` works.
+- `bench`: the drop is measured from the clock of the first seconds under load, a cluster that was barely loaded is labelled instead of judged, a sustained drop over 15% can no longer sit next to PASS, a run stopped early reads `incomplete`, and the demo card looks like a loaded run.
+- `fleet --demo` no longer shows this Mac's real hostname.
+- Settings shows the real sample interval for values outside the presets, and stepping stops at 250 ms and 5 s instead of wrapping.
+- `U` and Check for updates in the menu run a real check.
+- Enter with the process list hidden, the help box over the footer, a stale filter message, text cut without `…`, fleet navigation at the edges, and the missing axis labels at 80×24.
+- `--no-mouse` ignores mouse input completely; `H` in a replay explains itself instead of showing this Mac's history.
+- `line --style ansi|tmux` colours every reading and honours `SILTOP_THEME`, `NO_COLOR` and `TERM=dumb`.
+- A closed pipe (`siltop … | head`) exits 0 quietly; error messages no longer show `(os error N)`.
+- `--diagnose` no longer names siltop as the busiest process; `agent run` saves its open history bucket on SIGTERM.
+- `serve --addr localhost:PORT` works; a 405 carries `Allow: GET`.
+
+### Added
+- `siltop <command> --help` and `siltop help <command>` for every command.
+- `siltop --demo` starts with 15 minutes of history, so the graphs are full from the first frame, and its process table has real-looking apps that group by app.
+- A designed onboarding card.
 
 ### Changed
 - The Homebrew formula installs shell completions and the man page, and passes `brew audit --strict`.

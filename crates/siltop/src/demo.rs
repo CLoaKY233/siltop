@@ -1,7 +1,8 @@
 //! `--demo`: a canned, looping 60 s session for README captures and
 //! screenshots. Every value is a pure function of the session clock (no
-//! hardware, no RNG, no wall clock), so the same second always paints the
-//! same screen.
+//! hardware, no RNG), so the same second always paints the same screen. The
+//! wall clock is read once, when the demo starts, only to date its processes
+//! (`up 2d04` must count from now); nothing of this Mac is ever shown.
 //!
 //! The session, on an M5 Pro laptop running on battery:
 //!
@@ -14,9 +15,12 @@
 //! | 32–46   | GPU inference spike: GPU and ANE busy, unified memory grows  |
 //! | 46–60   | cool-down; fans spin back down                               |
 //!
-//! The battery drains throughout. Process rows use far-future start times,
-//! so a kill armed in the demo can never match a live process: the
-//! identity check refuses it.
+//! The battery drains throughout. The process table is a Mac's worth of
+//! apps and daemons (Safari, Brave, Slack, Xcode, Zed, Ghostty, Ollama), run
+//! from `.app` bundles so `a` groups them, started minutes to days ago; the
+//! build's `cargo`, `rustc` and `ld` come and go with the build, and the
+//! model runner with the inference. Every process action is refused in the
+//! demo (`demo: process actions are off`), so no pid here reaches this Mac.
 
 use std::time::{Duration, Instant};
 
@@ -42,30 +46,42 @@ const S_MAX_MHZ: u32 = 4_608;
 const GPU_MAX_MHZ: u32 = 1_620;
 const MEM_TOTAL: u64 = 24 * GIB;
 const FAN_MAX: [u16; 2] = [6_550, 7_150];
-/// No live process can have started in the future, so no demo row can
-/// ever pass the kill identity check.
-const DEMO_START_UNIX: i64 = (i32::MAX as i64) * 4;
+/// Unix time [`frame`] dates processes from: a fixed moment, so a frame is
+/// the same every run. [`Demo`] uses the moment it started instead.
+const DEMO_EPOCH: i64 = 1_790_000_000;
 
 /// A [`Tick`] that replays the session, one frame per worker interval.
 pub struct Demo {
     /// The worker's cadence, so the session plays in real time.
     step: std::cell::Cell<Duration>,
     elapsed: Duration,
+    /// Unix seconds when the session started: process ages count from it.
+    epoch: i64,
 }
 
 impl Demo {
     #[must_use]
-    pub const fn new(step: Duration) -> Self {
+    pub fn new(step: Duration) -> Self {
         Self {
             step: std::cell::Cell::new(step),
             elapsed: Duration::ZERO,
+            epoch: unix_now(),
         }
     }
 }
 
+/// Wall-clock unix seconds, read once per session.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(DEMO_EPOCH, |d| {
+            i64::try_from(d.as_secs()).unwrap_or(DEMO_EPOCH)
+        })
+}
+
 impl Tick for Demo {
     fn tick(&mut self) -> Result<Snapshot> {
-        let snap = frame(self.elapsed, Instant::now());
+        let snap = frame_at(self.elapsed, Instant::now(), self.epoch);
         self.elapsed += self.step.get();
         Ok(snap)
     }
@@ -217,11 +233,11 @@ pub struct ProfiledDemo {
 
 impl ProfiledDemo {
     #[must_use]
-    pub const fn new(step: Duration, profile: Profile) -> Self {
+    pub fn new(step: Duration, profile: Profile) -> Self {
         Self {
             demo: Demo {
-                step: std::cell::Cell::new(step),
                 elapsed: profile.offset,
+                ..Demo::new(step)
             },
             profile,
         }
@@ -281,9 +297,24 @@ impl Phase {
     }
 }
 
-/// The session frame at `elapsed` (wrapped to [`SESSION`]).
+/// The session frame at `elapsed` (wrapped to [`SESSION`]), its processes
+/// dated from a fixed moment.
 #[must_use]
 pub fn frame(elapsed: Duration, collected_at: Instant) -> Snapshot {
+    frame_at(elapsed, collected_at, DEMO_EPOCH)
+}
+
+/// The session frame at `elapsed` for a session that started at unix
+/// second `epoch`.
+#[must_use]
+pub fn frame_at(elapsed: Duration, collected_at: Instant, epoch: i64) -> Snapshot {
+    let mut snap = machine(elapsed, collected_at);
+    snap.processes = processes(Phase::at(elapsed), elapsed, epoch);
+    snap
+}
+
+/// Everything in a frame but the process table.
+fn machine(elapsed: Duration, collected_at: Instant) -> Snapshot {
     let ph = Phase::at(elapsed);
     let mut snap = Snapshot::empty();
     snap.collected_at = collected_at;
@@ -298,7 +329,6 @@ pub fn frame(elapsed: Duration, collected_at: Instant) -> Snapshot {
     snap.thermal = thermal(ph);
     snap.power = power(ph, &snap);
     snap.battery = battery(ph, &snap.power, &snap.sensors);
-    snap.processes = processes(ph);
     snap.process_ncpu = u32::from(P_CORES + S_CORES);
     snap.unattributed_cpu = Some(18.0 + 30.0 * ph.build);
     snap.sampled = Sampled::default();
@@ -631,8 +661,26 @@ fn battery(ph: Phase, power: &PowerSnapshot, sensors: &SensorsSnapshot) -> Batte
     }
 }
 
-/// `(pid, ppid, name, user, idle cpu %, mem MiB, threads, role)`.
-type Row = (u32, u32, &'static str, &'static str, f32, u64, u32, Role);
+/// The frames that fill the graphs before the first live one: the
+/// session's last `window` at `step`, oldest first, ending where
+/// [`Demo`] starts (a loop boundary), so `siltop --demo` opens on full
+/// graphs instead of two empty minutes.
+#[must_use]
+pub fn backfill(window: Duration, step: Duration) -> Vec<Snapshot> {
+    let step_ms = step.as_millis().max(1);
+    let n = window.as_millis() / step_ms;
+    let loops = window.as_secs() / SESSION.as_secs() + 1;
+    let end = SESSION * u32::try_from(loops).unwrap_or(u32::MAX);
+    let collected_at = Instant::now();
+    (1..=n)
+        .rev()
+        .filter_map(|back| {
+            let back = Duration::from_millis(u64::try_from(back * step_ms).ok()?);
+            // Only the graphs read these; the table shows the live frame.
+            Some(machine(end.checked_sub(back)?, collected_at))
+        })
+        .collect()
+}
 
 /// What drives a row's CPU beyond its idle figure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -643,119 +691,212 @@ enum Role {
     Browse,
 }
 
+/// When a row's process started.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Born {
+    /// This long before the demo started, in seconds.
+    Ago(i64),
+    /// At second `.0` of every loop, living until `.1`: the build's
+    /// processes and the model runner come and go with the story.
+    Loop(f32, f32),
+}
+
+/// One canned process.
+struct Row {
+    pid: u32,
+    ppid: u32,
+    name: &'static str,
+    user: &'static str,
+    /// CPU % when nothing in the story drives it.
+    idle: f32,
+    mem_mib: u64,
+    threads: u32,
+    role: Role,
+    /// The executable's path.
+    path: &'static str,
+    /// The arguments after the program name.
+    args: &'static [&'static str],
+    born: Born,
+}
+
+const MIN: i64 = 60;
+const HOUR: i64 = 60 * MIN;
+const DAY: i64 = 24 * HOUR;
+/// How long the demo Mac has been up.
+const BOOT: i64 = 6 * DAY + 4 * HOUR + 12 * MIN;
+
+#[allow(clippy::too_many_arguments, clippy::similar_names)]
+const fn row(
+    pid: u32,
+    ppid: u32,
+    name: &'static str,
+    user: &'static str,
+    idle: f32,
+    mem_mib: u64,
+    threads: u32,
+    role: Role,
+    path: &'static str,
+    args: &'static [&'static str],
+    born: Born,
+) -> Row {
+    Row {
+        pid,
+        ppid,
+        name,
+        user,
+        idle,
+        mem_mib,
+        threads,
+        role,
+        path,
+        args,
+        born,
+    }
+}
+
+use Born::{Ago, Loop};
+use Role::{Browse, Build, Idle, Infer};
+
+const BRAVE_RENDERER: &str = "/Applications/Brave Browser.app/Contents/Frameworks/Brave Browser Framework.framework/Versions/131.1.73.104/Helpers/Brave Browser Helper (Renderer).app/Contents/MacOS/Brave Browser Helper (Renderer)";
+const RUSTC: &str = "/Users/dev/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc";
+const WEBCONTENT: &str = "/Applications/Safari.app/Contents/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent";
+
+/// A Mac's worth of processes. Paths are the real layout of each app, so
+/// `a` folds helpers into their app and the dossier reads like a real one.
+#[rustfmt::skip]
 const ROWS: &[Row] = &[
-    (1, 0, "launchd", "root", 0.3, 14, 4, Role::Idle),
-    (
-        412,
-        1,
-        "WindowServer",
-        "_windowserver",
-        11.2,
-        412,
-        24,
-        Role::Browse,
-    ),
-    (301, 1, "mds_stores", "root", 2.1, 96, 9, Role::Idle),
-    (517, 1, "coreaudiod", "_coreaudiod", 1.1, 22, 11, Role::Idle),
-    (1180, 1, "Finder", "dev", 0.4, 132, 9, Role::Idle),
-    (2210, 1, "Safari", "dev", 4.8, 612, 38, Role::Browse),
-    (
-        2240,
-        2210,
-        "Safari Web Content",
-        "dev",
-        7.6,
-        402,
-        22,
-        Role::Browse,
-    ),
-    (3102, 1, "Ghostty", "dev", 2.2, 188, 12, Role::Idle),
-    (3150, 3102, "zsh", "dev", 0.0, 4, 1, Role::Idle),
-    (3188, 3150, "cargo", "dev", 0.6, 72, 12, Role::Build),
-    (51_234, 3188, "rustc", "dev", 0.0, 1_210, 18, Role::Build),
-    (51_240, 3188, "rustc", "dev", 0.0, 942, 16, Role::Build),
-    (51_266, 3188, "rustc", "dev", 0.0, 610, 14, Role::Build),
-    (51_281, 3188, "ld64", "dev", 0.0, 380, 4, Role::Build),
-    (4012, 1, "zed", "dev", 3.1, 739, 38, Role::Idle),
-    (
-        4040,
-        4012,
-        "rust-analyzer",
-        "dev",
-        6.4,
-        2_540,
-        26,
-        Role::Build,
-    ),
-    (4501, 1, "Slack", "dev", 1.4, 356, 29, Role::Idle),
-    (6001, 1, "ollama", "dev", 0.2, 58, 12, Role::Idle),
-    (
-        6020,
-        6001,
-        "ollama-runner",
-        "dev",
-        0.5,
-        1_100,
-        20,
-        Role::Infer,
-    ),
-    (7002, 3150, "siltop", "dev", 0.4, 15, 4, Role::Idle),
-    (7422, 1, "backupd", "root", 0.9, 51, 7, Role::Idle),
-    (8250, 1, "Xcode", "dev", 1.8, 1_440, 34, Role::Idle),
+    // the system
+    row(1, 0, "launchd", "root", 0.3, 14, 4, Idle, "/sbin/launchd", &[], Ago(BOOT)),
+    row(92, 1, "logd", "root", 0.6, 31, 6, Idle, "/usr/libexec/logd", &[], Ago(BOOT - 20)),
+    row(96, 1, "powerd", "root", 0.1, 6, 3, Idle, "/System/Library/CoreServices/powerd.bundle/powerd", &[], Ago(BOOT - 20)),
+    row(118, 1, "mds", "root", 0.7, 48, 8, Idle, "/System/Library/Frameworks/CoreServices.framework/Frameworks/Metadata.framework/Support/mds", &[], Ago(BOOT - 25)),
+    row(140, 1, "bluetoothd", "root", 0.4, 12, 7, Idle, "/usr/sbin/bluetoothd", &[], Ago(BOOT - 25)),
+    row(160, 1, "WindowServer", "_windowserver", 11.2, 412, 24, Browse, "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer", &["-daemon"], Ago(BOOT - 30)),
+    row(212, 1, "trustd", "root", 0.2, 9, 3, Idle, "/usr/libexec/trustd", &[], Ago(BOOT - 30)),
+    row(301, 1, "mds_stores", "root", 2.1, 96, 9, Idle, "/System/Library/Frameworks/CoreServices.framework/Frameworks/Metadata.framework/Support/mds_stores", &[], Ago(BOOT - 40)),
+    row(517, 1, "coreaudiod", "_coreaudiod", 1.1, 22, 11, Idle, "/usr/sbin/coreaudiod", &[], Ago(BOOT - 40)),
+    row(611, 1, "cfprefsd", "dev", 0.2, 7, 3, Idle, "/usr/sbin/cfprefsd", &["agent"], Ago(BOOT - 60)),
+    row(640, 1, "Dock", "dev", 0.3, 88, 6, Idle, "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock", &[], Ago(BOOT - 62)),
+    row(660, 1, "ControlCenter", "dev", 0.4, 64, 7, Idle, "/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter", &[], Ago(BOOT - 62)),
+    row(705, 1, "Spotlight", "dev", 0.2, 54, 6, Idle, "/System/Library/CoreServices/Spotlight.app/Contents/MacOS/Spotlight", &[], Ago(BOOT - 64)),
+    row(742, 1, "backupd", "root", 0.9, 51, 7, Idle, "/System/Library/CoreServices/backupd.bundle/Contents/Resources/backupd", &[], Ago(38 * MIN)),
+    row(1180, 1, "Finder", "dev", 0.4, 132, 9, Idle, "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder", &[], Ago(BOOT - 65)),
+    // Safari and its web content
+    row(2210, 1, "Safari", "dev", 4.8, 612, 38, Browse, "/Applications/Safari.app/Contents/MacOS/Safari", &[], Ago(2 * DAY + 4 * HOUR)),
+    row(2219, 2210, "Safari Networking", "dev", 0.6, 44, 9, Browse, "/Applications/Safari.app/Contents/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking", &[], Ago(2 * DAY + 4 * HOUR)),
+    row(2240, 2210, "Safari Web Content", "dev", 7.6, 402, 22, Browse, WEBCONTENT, &[], Ago(2 * HOUR + 11 * MIN)),
+    row(2251, 2210, "Safari Web Content", "dev", 1.3, 188, 14, Browse, WEBCONTENT, &[], Ago(26 * MIN)),
+    // Brave and its helpers
+    row(2800, 1, "Brave Browser", "dev", 2.6, 498, 41, Browse, "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", &[], Ago(DAY + 3 * HOUR)),
+    row(2812, 2800, "Brave Browser Helper (GPU)", "dev", 3.4, 236, 18, Browse, "/Applications/Brave Browser.app/Contents/Frameworks/Brave Browser Framework.framework/Versions/131.1.73.104/Helpers/Brave Browser Helper (GPU).app/Contents/MacOS/Brave Browser Helper (GPU)", &["--type=gpu-process"], Ago(DAY + 3 * HOUR)),
+    row(2815, 2800, "Brave Browser Helper", "dev", 0.5, 62, 9, Idle, "/Applications/Brave Browser.app/Contents/Frameworks/Brave Browser Framework.framework/Versions/131.1.73.104/Helpers/Brave Browser Helper.app/Contents/MacOS/Brave Browser Helper", &["--type=utility", "--utility-sub-type=network.mojom.NetworkService"], Ago(DAY + 3 * HOUR)),
+    row(2830, 2800, "Brave Browser Helper (Renderer)", "dev", 4.1, 322, 19, Browse, BRAVE_RENDERER, &["--type=renderer", "--lang=en-US"], Ago(3 * HOUR + 40 * MIN)),
+    row(2847, 2800, "Brave Browser Helper (Renderer)", "dev", 1.2, 174, 15, Browse, BRAVE_RENDERER, &["--type=renderer", "--lang=en-US"], Ago(42 * MIN)),
+    row(2901, 2800, "Brave Browser Helper (Renderer)", "dev", 0.4, 96, 13, Idle, BRAVE_RENDERER, &["--type=renderer", "--lang=en-US"], Ago(14 * MIN)),
+    // Slack
+    row(4501, 1, "Slack", "dev", 1.4, 356, 29, Idle, "/Applications/Slack.app/Contents/MacOS/Slack", &[], Ago(3 * DAY + 2 * HOUR)),
+    row(4512, 4501, "Slack Helper (GPU)", "dev", 0.8, 118, 12, Idle, "/Applications/Slack.app/Contents/Frameworks/Slack Helper (GPU).app/Contents/MacOS/Slack Helper (GPU)", &["--type=gpu-process"], Ago(3 * DAY + 2 * HOUR)),
+    row(4520, 4501, "Slack Helper (Renderer)", "dev", 1.9, 284, 17, Idle, "/Applications/Slack.app/Contents/Frameworks/Slack Helper (Renderer).app/Contents/MacOS/Slack Helper (Renderer)", &["--type=renderer"], Ago(3 * DAY + 2 * HOUR)),
+    // the terminal, its shells, and the build
+    row(3102, 1, "ghostty", "dev", 2.2, 188, 12, Idle, "/Applications/Ghostty.app/Contents/MacOS/ghostty", &[], Ago(9 * HOUR + 5 * MIN)),
+    row(3150, 3102, "zsh", "dev", 0.0, 4, 1, Idle, "/bin/zsh", &["-l"], Ago(9 * HOUR + 5 * MIN)),
+    row(3160, 3102, "zsh", "dev", 0.0, 4, 1, Idle, "/bin/zsh", &["-l"], Ago(47 * MIN)),
+    row(7002, 3160, "siltop", "dev", 0.4, 15, 4, Idle, "/opt/homebrew/bin/siltop", &["--demo"], Ago(0)),
+    row(50_120, 3150, "cargo", "dev", 0.6, 72, 12, Build, "/Users/dev/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo", &["build", "--release"], Loop(6.0, 28.5)),
+    row(51_234, 50_120, "rustc", "dev", 0.0, 1_210, 18, Build, RUSTC, &["--crate-name", "siltop_metrics", "--edition=2024", "-C", "opt-level=3"], Loop(8.0, 27.5)),
+    row(51_240, 50_120, "rustc", "dev", 0.0, 942, 16, Build, RUSTC, &["--crate-name", "siltop_ui", "--edition=2024", "-C", "opt-level=3"], Loop(9.5, 27.5)),
+    row(51_266, 50_120, "rustc", "dev", 0.0, 610, 14, Build, RUSTC, &["--crate-name", "siltop_core", "--edition=2024", "-C", "opt-level=3"], Loop(11.0, 27.0)),
+    row(51_281, 50_120, "ld", "dev", 0.0, 380, 4, Build, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld", &["-o", "target/release/siltop"], Loop(23.0, 28.5)),
+    // editors
+    row(4012, 1, "zed", "dev", 3.1, 739, 38, Idle, "/Applications/Zed.app/Contents/MacOS/zed", &[], Ago(3 * HOUR + 18 * MIN)),
+    row(4040, 4012, "rust-analyzer", "dev", 6.4, 2_540, 26, Build, "/Users/dev/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rust-analyzer", &[], Ago(3 * HOUR + 17 * MIN)),
+    row(8250, 1, "Xcode", "dev", 1.8, 1_440, 34, Idle, "/Applications/Xcode.app/Contents/MacOS/Xcode", &[], Ago(5 * HOUR + 2 * MIN)),
+    row(8261, 8250, "SourceKitService", "dev", 0.3, 212, 9, Idle, "/Applications/Xcode.app/Contents/SharedFrameworks/SourceKit.framework/Versions/A/XPCServices/SourceKitService.xpc/Contents/MacOS/SourceKitService", &[], Ago(5 * HOUR + MIN)),
+    // the model server and its runner
+    row(5990, 1, "Ollama", "dev", 0.1, 46, 8, Idle, "/Applications/Ollama.app/Contents/MacOS/Ollama", &[], Ago(2 * DAY + 6 * HOUR)),
+    row(6001, 5990, "ollama", "dev", 0.2, 58, 12, Idle, "/Applications/Ollama.app/Contents/Resources/ollama", &["serve"], Ago(2 * DAY + 6 * HOUR)),
+    row(6020, 6001, "ollama-runner", "dev", 0.5, 1_100, 20, Infer, "/Applications/Ollama.app/Contents/Resources/ollama", &["runner", "--model", "qwen3-coder:30b", "--ctx-size", "8192"], Loop(31.0, 60.0)),
 ];
 
-fn processes(ph: Phase) -> Vec<Process> {
+/// The account a demo user name stands for.
+fn uid_of(user: &str) -> u32 {
+    match user {
+        "dev" => 501,
+        "_windowserver" => 88,
+        "_coreaudiod" => 202,
+        _ => 0,
+    }
+}
+
+/// The processes alive at this point of the session, dated from `epoch`.
+fn processes(ph: Phase, elapsed: Duration, epoch: i64) -> Vec<Process> {
+    // Seconds from the demo's start to the start of this loop.
+    let loop_start = (elapsed.as_secs_f64() - f64::from(ph.t)) as i64;
     ROWS.iter()
         .enumerate()
-        .map(
-            |(i, &(pid, ppid, name, user, idle, mem_mib, threads, role))| {
-                let w = wobble(ph.t, 20.0 + i as f32);
-                let (cpu, extra_mib, gpu) = match role {
-                    Role::Idle => (idle * (0.6 + 0.8 * w), 0.0, 0.0),
-                    Role::Browse => (idle * (0.7 + 0.6 * w), 0.0, 4.0 * w),
-                    Role::Build => {
-                        let heavy = if name == "rustc" { 520.0 } else { 45.0 };
-                        let cpu = idle + ph.build * heavy * (0.7 + 0.3 * w);
-                        (cpu, ph.build * mem_mib as f32 * 0.8, 0.0)
-                    }
-                    Role::Infer => {
-                        let cpu = idle + ph.infer * 160.0 * (0.8 + 0.2 * w);
-                        (cpu, ph.infer * 8_400.0, 88.0 * ph.infer)
-                    }
-                };
-                let mem = (mem_mib as f32 + extra_mib) as u64 * MIB;
-                Process {
-                    pid,
-                    ppid,
-                    name: String::from(name),
-                    cpu: Some(cpu),
-                    mem_bytes: Some(mem),
-                    threads: Some(threads),
-                    gpu,
-                    user: String::from(user),
-                    uid: if user == "dev" { 501 } else { 0 },
-                    command: Some(format!("/demo/{name}")),
-                    args: vec![String::from(name)],
-                    status: "",
-                    start_unix: DEMO_START_UNIX,
-                    cpu_spark: (0..16_u8)
-                        .map(|k| cpu * (0.85 + 0.15 * wobble(ph.t - f32::from(k), 30.0)))
-                        .rev()
-                        .collect(),
-                    restricted: false,
-                    rss_bytes: Some(mem + mem / 8),
-                    energy_w: Some(cpu / 100.0 * 1.4),
-                    disk_read_bps: Some(0.0),
-                    disk_write_bps: Some(if role == Role::Build {
-                        f64::from(ph.build) * 24_000_000.0
-                    } else {
-                        0.0
-                    }),
-                    wakeups_per_s: Some(12.0 + 40.0 * w),
-                    child_cpu_ns: None,
+        .filter(|(_, r)| match r.born {
+            Ago(_) => true,
+            Loop(from, to) => (from..to).contains(&ph.t),
+        })
+        .map(|(i, r)| {
+            let w = wobble(ph.t, 20.0 + i as f32);
+            let (cpu, extra_mib, gpu) = match r.role {
+                Idle => (r.idle * (0.6 + 0.8 * w), 0.0, 0.0),
+                Browse => (r.idle * (0.7 + 0.6 * w), 0.0, r.idle.min(4.0) * w),
+                Build => {
+                    let heavy = match r.name {
+                        "rustc" => 520.0,
+                        "ld" => 160.0,
+                        _ => 45.0,
+                    };
+                    let cpu = r.idle + ph.build * heavy * (0.7 + 0.3 * w);
+                    (cpu, ph.build * r.mem_mib as f32 * 0.8, 0.0)
                 }
-            },
-        )
+                Infer => {
+                    let cpu = r.idle + ph.infer * 160.0 * (0.8 + 0.2 * w);
+                    (cpu, ph.infer * 8_400.0, 88.0 * ph.infer)
+                }
+            };
+            let start_unix = match r.born {
+                Ago(secs) => epoch - secs,
+                Loop(from, _) => epoch + loop_start + from as i64,
+            };
+            let mem = (r.mem_mib as f32 + extra_mib) as u64 * MIB;
+            let argv0 = r.path.rsplit('/').next().unwrap_or(r.name);
+            Process {
+                pid: r.pid,
+                ppid: r.ppid,
+                name: String::from(r.name),
+                cpu: Some(cpu),
+                mem_bytes: Some(mem),
+                threads: Some(r.threads),
+                gpu,
+                user: String::from(r.user),
+                uid: uid_of(r.user),
+                command: Some(String::from(r.path)),
+                args: std::iter::once(argv0)
+                    .chain(r.args.iter().copied())
+                    .map(String::from)
+                    .collect(),
+                status: "",
+                start_unix,
+                cpu_spark: (0..16_u8)
+                    .map(|k| cpu * (0.85 + 0.15 * wobble(ph.t - f32::from(k), 30.0)))
+                    .rev()
+                    .collect(),
+                restricted: false,
+                rss_bytes: Some(mem + mem / 8),
+                energy_w: Some(cpu / 100.0 * 1.4),
+                disk_read_bps: Some(0.0),
+                disk_write_bps: Some(if r.role == Build {
+                    f64::from(ph.build) * 24_000_000.0
+                } else {
+                    0.0
+                }),
+                wakeups_per_s: Some(12.0 + 40.0 * w),
+                child_cpu_ns: None,
+            }
+        })
         .collect()
 }
 
@@ -810,6 +951,15 @@ mod tests {
         (0..240).map(|q| q as f32 / 2.0)
     }
 
+    /// `cargo test --release -p siltop -- --ignored --nocapture backfill_cost`
+    #[test]
+    #[ignore = "timing probe: run in release"]
+    fn backfill_cost() {
+        let start = Instant::now();
+        let frames = backfill(siltop_core::HISTORY_WINDOW, Duration::from_millis(250));
+        println!("{} frames in {:?}", frames.len(), start.elapsed());
+    }
+
     #[test]
     fn same_second_is_the_same_frame() {
         let when = Instant::now();
@@ -823,8 +973,14 @@ mod tests {
     fn session_loops_every_sixty_seconds() {
         let when = Instant::now();
         for secs in [0.0_f32, 7.5, 18.0, 38.0, 59.0] {
-            let a = frame(Duration::from_secs_f32(secs), when);
-            let b = frame(Duration::from_secs_f32(secs + 60.0), when);
+            let mut a = frame(Duration::from_secs_f32(secs), when);
+            let mut b = frame(Duration::from_secs_f32(secs + 60.0), when);
+            // Only the start of a process born this loop moves on a loop.
+            for (p, q) in a.processes.iter_mut().zip(&mut b.processes) {
+                let shift = q.start_unix - p.start_unix;
+                assert!(shift == 0 || shift == 60, "{} {shift}", p.name);
+                q.start_unix = p.start_unix;
+            }
             assert_eq!(a, b, "{secs}");
         }
     }
@@ -835,9 +991,9 @@ mod tests {
         let first = demo.tick().unwrap();
         let second = demo.tick().unwrap();
         let when = first.collected_at;
-        assert_eq!(frame(Duration::ZERO, when), first);
+        assert_eq!(frame_at(Duration::ZERO, when, demo.epoch), first);
         assert_eq!(
-            frame(Duration::from_secs(1), second.collected_at),
+            frame_at(Duration::from_secs(1), second.collected_at, demo.epoch),
             second,
             "second tick is t = 1 s"
         );
@@ -851,7 +1007,7 @@ mod tests {
         let _ = demo.tick().unwrap();
         let third = demo.tick().unwrap();
         assert_eq!(
-            frame(Duration::from_millis(2500), third.collected_at),
+            frame_at(Duration::from_millis(2500), third.collected_at, demo.epoch),
             third,
             "0.5 s, then 2 s per tick"
         );
@@ -1015,16 +1171,85 @@ mod tests {
         }
     }
 
-    /// A kill armed in the demo must never reach a real process.
+    /// Regression: every row read `up 0s` (a start in the far future) and
+    /// sorting by start did nothing. Rows started in the past, from minutes
+    /// to days before the demo, and the build's processes during the loop.
     #[test]
-    fn demo_rows_can_never_pass_the_kill_identity_check() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        for p in at(10.0).processes {
-            assert!(p.start_unix > now + 10 * 365 * 86_400, "{}", p.name);
+    fn processes_started_minutes_to_days_ago() {
+        let epoch = 1_800_000_000;
+        let procs = frame_at(Duration::from_secs(80), Instant::now(), epoch).processes;
+        let now = epoch + 80;
+        let ages: Vec<i64> = procs.iter().map(|p| now - p.start_unix).collect();
+        assert!(ages.iter().all(|&a| a >= 0), "{ages:?}");
+        assert!(ages.iter().any(|&a| a < 60), "something just started");
+        assert!(ages.iter().any(|&a| (60..3600).contains(&a)), "minutes");
+        assert!(ages.iter().any(|&a| (3600..86_400).contains(&a)), "hours");
+        assert!(ages.iter().any(|&a| a >= 86_400), "days");
+        let rustc = procs.iter().find(|p| p.name == "rustc").unwrap();
+        assert_eq!(
+            now - rustc.start_unix,
+            12,
+            "rustc started with this loop's build"
+        );
+    }
+
+    /// Regression: `a` grouped nothing ("grouped by app" over a flat list).
+    #[test]
+    fn gui_apps_and_their_helpers_share_a_bundle() {
+        let procs = at(20.0).processes;
+        let bundle = |name: &str| -> Vec<&str> {
+            procs
+                .iter()
+                .filter_map(|p| p.command.as_deref())
+                .filter(|c| c.starts_with(&format!("/Applications/{name}.app/")))
+                .collect()
+        };
+        for (app, members) in [
+            ("Safari", 4),
+            ("Brave Browser", 6),
+            ("Slack", 3),
+            ("Xcode", 2),
+            ("Zed", 1),
+            ("Ghostty", 1),
+            ("Ollama", 2),
+        ] {
+            assert_eq!(bundle(app).len(), members, "{app}");
         }
+        assert!((38..=46).contains(&procs.len()), "{}", procs.len());
+        for p in &procs {
+            assert!(!p.args.is_empty(), "{} has an argv", p.name);
+            assert!(["dev", "root"].contains(&p.user.as_str()) || p.user.starts_with('_'));
+        }
+    }
+
+    #[test]
+    fn build_processes_come_and_go_with_the_build() {
+        let names =
+            |secs: f32| -> Vec<String> { at(secs).processes.into_iter().map(|p| p.name).collect() };
+        assert!(!names(3.0).contains(&String::from("rustc")));
+        assert!(names(20.0).contains(&String::from("rustc")));
+        assert!(names(20.0).contains(&String::from("cargo")));
+        assert!(!names(40.0).contains(&String::from("cargo")));
+        assert!(names(40.0).contains(&String::from("ollama-runner")));
+    }
+
+    /// The demo's first live frame continues the backfill: the graphs open
+    /// full, ending on the loop boundary where [`Demo`] starts.
+    #[test]
+    fn backfill_fills_the_window_and_ends_where_the_demo_starts() {
+        let step = Duration::from_millis(500);
+        let frames = backfill(Duration::from_mins(2), step);
+        assert_eq!(frames.len(), 240);
+        let last = frames.last().unwrap();
+        let when = last.collected_at;
+        let mut want = frame(SESSION.checked_sub(step).unwrap(), when);
+        want.processes.clear();
+        assert_eq!(*last, want, "the frame just before t = 0");
+        assert!(frames.iter().all(|f| f.processes.is_empty()));
+        assert!(
+            frames.iter().any(|f| f.cpu.active > 0.8),
+            "the window holds a build burst"
+        );
     }
 
     #[test]

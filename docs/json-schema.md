@@ -31,9 +31,9 @@ mapped out of `siltop_core::Snapshot`; the core types carry no serde.
 | `cpu.usage` | 0..=1 | non-idle share across all cores |
 | `cpu.scaled` | 0..=1 | usage weighted by frequency: Mach busy × the IOReport DVFS clock ratio per core; equals `usage` only where IOReport residency is unavailable |
 | `cpu.freq_mhz`, `cpu.temp_c` | int?/float? | package frequency and temperature |
-| `cpu.clusters[]` | `{kind, cores, usage, scaled, freq_mhz}` | per cluster; `kind` is `efficiency`, `performance` or `super`; `freq_mhz` is the residency-weighted average from IOReport DVFS states, `null` until the first residency window lands or where IOReport is unavailable |
+| `cpu.clusters[]` | `{kind, cores, usage, scaled, freq_mhz}` | per cluster; `kind` is `efficiency`, `performance` or `super`; `freq_mhz` is the residency-weighted average from IOReport DVFS states over the cores' active time; `null` while the cluster is idle (no active residency in the window, common on a quiet Mac), until the first residency window lands, and where IOReport is unavailable — never a made-up idle clock |
 | `cpu.cores[]` | `{kind, index, usage}` | per logical core, Mach order |
-| `gpu` | object? | `{usage, scaled, freq_mhz, temp_c, mem_in_use_bytes, mem_alloc_bytes}`; `null` without a GPU reading |
+| `gpu` | object? | `{usage, scaled, freq_mhz, temp_c, mem_in_use_bytes, mem_alloc_bytes}`; `null` without a GPU reading. `freq_mhz` is the residency-weighted active clock, `null` while the GPU was idle for the whole window and where IOReport is unavailable |
 | `memory.ram_total`, `memory.ram_usage` | bytes | macmon names |
 | `memory.swap_total`, `memory.swap_usage` | bytes | macmon names |
 | `memory.wired_bytes`, `memory.compressed_bytes`, `memory.cache_bytes` | bytes | `cache_bytes` is file-backed + purgeable (Activity Monitor's "Cached Files") |
@@ -50,9 +50,9 @@ mapped out of `siltop_core::Snapshot`; the core types carry no serde.
 | `sys_power` | W? | whole-system input power (SMC `PSTR`); `null` when the SMC has no `PSTR` |
 | `all_power` | W? | sum of the known `cpu/gpu/ane_power` rails; `null` when none is known |
 | `cpu_power`, `gpu_power`, `ane_power`, `ram_power` | W? | macmon names. CPU: SMC rails on mapped models, else the IOReport energy counter; GPU/ANE/DRAM: IOReport energy counters, held between PMGR publications and `null` until two have landed or once 10 s stale (docs/research/13) |
-| `gpu_freq_mhz` | MHz? | macmon name; same value as `gpu.freq_mhz` |
-| `battery` | object? | `{percent, charging, on_ac, watts, minutes_remaining}`; `null` on Macs without a battery (desktops) |
-| `processes[]` | | top `--procs N` (default 10) by CPU: `{pid, ppid, name, user, cpu_pct, cpu_cores, mem_bytes, threads, energy_w, restricted, status}`. `cpu_pct` is **per-core percent** like Activity Monitor and `top` (100 = one fully busy core, so a process can exceed 100); `cpu_cores = cpu_pct / 100`. `mem_bytes` is the physical footprint. `cpu_pct`, `cpu_cores`, `mem_bytes`, `threads` and `energy_w` are `null` when the kernel withholds them (`restricted: true`, another user's process) — never an invented 0 |
+| `gpu_freq_mhz` | MHz? | macmon name; same value as `gpu.freq_mhz`, so also `null` while the GPU is idle |
+| `battery` | object? | `{percent, charging, on_ac, watts, minutes_remaining}`; `null` on Macs without a battery (desktops). `watts` is the battery's own power: **positive while it charges, negative while it discharges** (powers the Mac), about 0 when full on AC |
+| `processes[]` | | top `--procs N` (default 10) by CPU: `{pid, ppid, name, user, cpu_pct, cpu_cores, mem_bytes, threads, energy_w, restricted, status}`. `cpu_pct` is **per-core percent** like Activity Monitor and `top` (100 = one fully busy core, so a process can exceed 100); `cpu_cores = cpu_pct / 100`. `mem_bytes` is the physical footprint. `cpu_pct`, `cpu_cores`, `mem_bytes`, `threads` and `energy_w` are `null` when the kernel withholds them (`restricted: true`, another user's process) — never an invented 0. `status` is `"stopped"` (SIGSTOP, Ctrl-Z), `"zombie"` (exited, not yet reaped), or `""` for every live process: the kernel's `p_stat` reads running for nearly every process, so running and sleeping are not told apart |
 | `verdict` | object | `{kind, headline, evidence[]}`; `kind` is `normal`, `busy`, `battery_drain`, `memory_tight` or `throttling` (see `core/src/verdict.rs`) |
 | `health` | object | collector → `ok`, `pending`, `stale`, `failed`, `absent` |
 
