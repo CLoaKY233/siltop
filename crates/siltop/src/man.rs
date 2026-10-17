@@ -124,8 +124,8 @@ pub fn page() -> String {
         ".SH DESCRIPTION\n\
          A live dashboard of CPU (per core), GPU, memory, power, temperatures, \
          fans, network, disks and processes on Apple Silicon Macs. Hardware a \
-         Mac does not have is hidden rather than shown as zero. Everything runs \
-         offline: no network, no telemetry, no sudo. \
+         Mac does not have is hidden rather than shown as zero. It needs no \
+         root, and makes no network request unless update checks are turned on. \
          \\fBsiltop help\\fR \\fICOMMAND\\fR, or \\fICOMMAND\\fR \\fB\\-\\-help\\fR, \
          prints one command's usage and options.\n",
     );

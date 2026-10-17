@@ -631,7 +631,7 @@ pub fn usage() -> String {
         let line = format!("siltop {} {}", command.name, synopsis_args(command));
         let _ = writeln!(out, "       {}", line.trim_end());
     }
-    out.push_str("\nApple Silicon system monitor. No telemetry, no sudo.\n");
+    out.push_str("\nTerminal system monitor for Apple Silicon Macs.\n");
     let section = |out: &mut String, section: Section| {
         let _ = write!(out, "\n{}:\n", section.title());
         for spec in FLAGS.iter().filter(|spec| spec.section == section) {
@@ -2540,7 +2540,14 @@ mod tests {
     #[test]
     fn readme_keeps_the_privacy_promises() {
         let readme = repo_file("README.md");
-        for promise in ["No network of its own", "No telemetry", "No sudo"] {
+        // The facts behind the privacy section, as the code implements them.
+        for promise in [
+            "## Privacy",
+            "off until you turn it on",
+            "127.0.0.1",
+            "never sent",
+            "do not need root",
+        ] {
             assert!(readme.contains(promise), "{promise}");
         }
     }

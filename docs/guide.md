@@ -1,8 +1,8 @@
 # The siltop user guide
 
-siltop is a system monitor for Apple Silicon Macs that lives in your terminal. It shows
-what your Mac is doing right now (and what it was doing an hour ago) in a way you
-can read at a glance. This guide takes you from the first launch to scripting it.
+siltop is a terminal system monitor for Apple Silicon Macs. It shows current CPU, GPU,
+memory, power, temperature, network and disk activity, plus history from earlier. This
+guide covers everything from the first launch to scripting.
 
 If you only remember three keys: **`m`** opens the menu, **`?`** lists every key, and
 **`T`** cycles themes. The first launch shows exactly that hint in the footer when the

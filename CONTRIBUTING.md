@@ -34,7 +34,7 @@ cargo test --workspace            # plain `cargo test` only covers the binary cr
 - Keep the crate boundaries in [crates/ARCHITECTURE.md](crates/ARCHITECTURE.md): `siltop-metrics` never depends on the UI, and `siltop-ui` never imports the metrics crate.
 - Tests live next to the code in `#[cfg(test)] mod tests`. Tests that touch real hardware must pass on CI machines, which have none: assert invariants, not that a sensor exists.
 - **Golden screens.** `crates/siltop-ui/src/widgets/golden.rs` paints the whole app from a fixed fixture into insta snapshots. Any change that moves a visible cell fails them. Re-bless on purpose (`cargo insta review`, or `INSTA_UPDATE=always cargo test -p siltop-ui golden`) and include the snapshot diff in your PR.
-- Changes to the binary or metrics crates should include before/after `scripts/perf-smoke.py` medians (see [docs/research/12-self-cost.md](docs/research/12-self-cost.md)). A monitor that burns a core is lying about the machine it watches.
+- Changes to the binary or metrics crates should include before/after `scripts/perf-smoke.py` medians (see [docs/research/12-self-cost.md](docs/research/12-self-cost.md)).
 
 ## Licensing of contributions
 

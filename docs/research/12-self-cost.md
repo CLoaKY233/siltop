@@ -6,7 +6,7 @@
 | **Tool** | [`scripts/perf-smoke.py`](../../scripts/perf-smoke.py) (pty driver shared with [`scripts/pty-shot.py`](../../scripts/pty-shot.py) via `scripts/ptyterm.py`) |
 | **Machine** | MacBook Pro Mac17,8, M5 Pro (6 Super + 12 Performance, 20-core GPU), 24 GB, macOS 27.0, AC power, no sudo |
 
-A system monitor that burns a core is lying about the machine it watches. This page is the method and the numbers: what siltop costs sitting idle in a terminal, what btop and macmon cost on the same machine, and the budget 0.1.0 has to meet. Every workstream that touches the bin or metrics crates re-runs perf-smoke and puts before/after medians in its PR.
+This page is the method and the numbers: what siltop costs sitting idle in a terminal, what btop and macmon cost on the same machine, and the budget 0.1.0 has to meet. Every workstream that touches the bin or metrics crates re-runs perf-smoke and puts before/after medians in its PR.
 
 ---
 
